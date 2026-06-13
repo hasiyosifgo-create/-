@@ -1,11 +1,5 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { fetchStockData, fetchCurrentPrice } from './yahoo.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const DB_FILE = path.join(__dirname, 'db.json');
+import { BotState } from './db.js';
 
 export class BotEngine {
   constructor(initialBalance = 500000) {
@@ -15,41 +9,62 @@ export class BotEngine {
     this.history = [];
     this.parameters = {};
     this.logs = [];
-    this.loadData();
+    this.dbState = null;
+    this.isReady = false;
   }
 
-  loadData() {
-    if (fs.existsSync(DB_FILE)) {
-      try {
-        const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
-        this.balance = data.balance ?? this.initialBalance;
-        this.portfolio = data.portfolio ?? {};
-        this.history = data.history ?? [];
-        this.parameters = data.parameters ?? {};
-        this.logs = data.logs ?? [];
-        console.log('Data loaded from db.json');
-      } catch (err) {
-        console.error('Failed to load data', err);
+  async initialize() {
+    try {
+      let state = await BotState.findOne({ id: 'bot_state' });
+      if (!state) {
+        state = new BotState({
+          id: 'bot_state',
+          balance: this.initialBalance,
+          initialBalance: this.initialBalance,
+          portfolio: {},
+          history: [],
+          parameters: {},
+          logs: []
+        });
+        await state.save();
       }
+      this.dbState = state;
+      this.balance = state.balance;
+      this.portfolio = state.portfolio || {};
+      this.history = state.history || [];
+      this.parameters = state.parameters || {};
+      this.logs = state.logs || [];
+      this.isReady = true;
+      console.log('Bot data initialized from MongoDB');
+    } catch (err) {
+      console.error('Failed to load data from MongoDB (Running in memory mode)', err);
+      this.isReady = true;
     }
   }
 
-  saveData() {
-    const data = {
-      balance: this.balance,
-      portfolio: this.portfolio,
-      history: this.history,
-      parameters: this.parameters,
-      logs: this.logs.slice(0, 100) // 最新の100件のみ保存
-    };
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+  async saveData() {
+    if (!this.dbState) return;
+    this.dbState.balance = this.balance;
+    this.dbState.portfolio = this.portfolio;
+    this.dbState.history = this.history;
+    this.dbState.parameters = this.parameters;
+    this.dbState.logs = this.logs.slice(0, 100);
+    this.dbState.markModified('portfolio');
+    this.dbState.markModified('parameters');
+    this.dbState.markModified('history');
+    this.dbState.markModified('logs');
+    try {
+      await this.dbState.save();
+    } catch (err) {
+      console.error('Failed to save data to MongoDB', err);
+    }
   }
 
-  addLog(message) {
+  async addLog(message) {
     const log = `[${new Date().toLocaleTimeString()}] ${message}`;
     this.logs.unshift(log);
     if (this.logs.length > 100) this.logs.pop();
-    this.saveData();
+    await this.saveData();
     console.log(log);
   }
 
@@ -64,7 +79,7 @@ export class BotEngine {
     return total;
   }
 
-  buy(symbol, shares, price) {
+  async buy(symbol, shares, price) {
     const cost = shares * price;
     if (this.balance >= cost) {
       this.balance -= cost;
@@ -77,13 +92,13 @@ export class BotEngine {
       p.shares = newTotalShares;
 
       this.recordHistory('BUY', symbol, shares, price);
-      this.saveData();
+      await this.saveData();
       return true;
     }
     return false;
   }
 
-  sell(symbol, shares, price) {
+  async sell(symbol, shares, price) {
     if (this.portfolio[symbol] && this.portfolio[symbol].shares >= shares) {
       const revenue = shares * price;
       this.balance += revenue;
@@ -94,7 +109,7 @@ export class BotEngine {
       }
 
       this.recordHistory('SELL', symbol, shares, price);
-      this.saveData();
+      await this.saveData();
       return true;
     }
     return false;
@@ -183,11 +198,13 @@ export class BotEngine {
       longSMA: bestLong,
       expectedProfitRate: ((bestProfit - 100000) / 100000) * 100
     };
-    this.saveData();
+    await this.saveData();
     return this.parameters[symbol];
   }
 
   async checkAndTrade(symbol) {
+    if (!this.isReady) return null;
+
     if (!this.parameters[symbol]) {
       await this.optimizeParameters(symbol);
     }
@@ -213,14 +230,14 @@ export class BotEngine {
       const investAmount = this.balance * 0.2;
       if (investAmount >= currentPrice) {
         const sharesToBuy = Math.floor(investAmount / currentPrice);
-        if (this.buy(symbol, sharesToBuy, currentPrice)) {
+        if (await this.buy(symbol, sharesToBuy, currentPrice)) {
           action = 'BUY';
         }
       }
     } else if (prevShort >= prevLong && currShort < currLong) {
       if (this.portfolio[symbol] && this.portfolio[symbol].shares > 0) {
         const sharesToSell = this.portfolio[symbol].shares;
-        if (this.sell(symbol, sharesToSell, currentPrice)) {
+        if (await this.sell(symbol, sharesToSell, currentPrice)) {
           action = 'SELL';
         }
       }
