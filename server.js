@@ -64,7 +64,8 @@ app.post('/api/toggle', async (req, res) => {
 
 // Serve frontend build in production
 app.use(express.static(path.join(__dirname, 'dist')));
-app.get('*', (req, res) => {
+// Express 5対応: '*' ではなく全てにマッチするミドルウェアとして使用
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
