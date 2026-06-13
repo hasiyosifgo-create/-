@@ -45,3 +45,25 @@ export const fetchCurrentPrice = async (symbol) => {
     return null;
   }
 };
+
+export const fetchNews = async (symbol) => {
+  try {
+    const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${symbol}&newsCount=5`;
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0'
+      }
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch news for ${symbol}`);
+    }
+    const data = await response.json();
+    if (data.news && data.news.length > 0) {
+      return data.news.map(item => item.title);
+    }
+    return [];
+  } catch (error) {
+    console.error("Error fetching news:", error);
+    return [];
+  }
+};

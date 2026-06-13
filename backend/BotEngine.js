@@ -1,5 +1,9 @@
-import { fetchStockData, fetchCurrentPrice } from './yahoo.js';
+import { fetchStockData, fetchCurrentPrice, fetchNews } from './yahoo.js';
 import { BotState } from './db.js';
+
+// 感情分析用のキーワード辞書
+const POSITIVE_WORDS = ['buy', 'up', 'bull', 'growth', 'profit', 'beats', 'positive', 'surge', 'record', 'gain', 'jump', 'upgrade', 'strong'];
+const NEGATIVE_WORDS = ['sell', 'down', 'bear', 'loss', 'misses', 'negative', 'drop', 'plunge', 'contaminated', 'lawsuit', 'panic', 'downgrade', 'weak', 'crash', 'fall'];
 
 export class BotEngine {
   constructor(initialBalance = 500000) {
@@ -79,7 +83,7 @@ export class BotEngine {
     return total;
   }
 
-  async buy(symbol, shares, price) {
+  async buy(symbol, shares, price, reason = 'BUY') {
     const cost = shares * price;
     if (this.balance >= cost) {
       this.balance -= cost;
@@ -91,14 +95,14 @@ export class BotEngine {
       p.averagePrice = ((p.shares * p.averagePrice) + cost) / newTotalShares;
       p.shares = newTotalShares;
 
-      this.recordHistory('BUY', symbol, shares, price);
+      this.recordHistory(reason, symbol, shares, price);
       await this.saveData();
       return true;
     }
     return false;
   }
 
-  async sell(symbol, shares, price) {
+  async sell(symbol, shares, price, reason = 'SELL') {
     if (this.portfolio[symbol] && this.portfolio[symbol].shares >= shares) {
       const revenue = shares * price;
       this.balance += revenue;
@@ -108,7 +112,7 @@ export class BotEngine {
         delete this.portfolio[symbol];
       }
 
-      this.recordHistory('SELL', symbol, shares, price);
+      this.recordHistory(reason, symbol, shares, price);
       await this.saveData();
       return true;
     }
@@ -127,6 +131,8 @@ export class BotEngine {
     });
   }
 
+  // ==== テクニカル指標の計算 ====
+
   calculateSMA(data, period) {
     const sma = [];
     for (let i = 0; i < data.length; i++) {
@@ -143,98 +149,159 @@ export class BotEngine {
     return sma;
   }
 
-  async optimizeParameters(symbol) {
-    const data = await fetchStockData(symbol, '1y', '1d');
-    if (data.length === 0) return;
+  calculateEMA(data, period) {
+    const ema = [];
+    const k = 2 / (period + 1);
+    let prevEma = null;
 
-    let bestProfit = -Infinity;
-    let bestShort = 5;
-    let bestLong = 20;
-
-    const shortPeriods = [5, 10, 15];
-    const longPeriods = [20, 30, 50];
-
-    for (const short of shortPeriods) {
-      for (const long of longPeriods) {
-        if (short >= long) continue;
-
-        let virtualBalance = 100000;
-        let virtualShares = 0;
-        const shortSma = this.calculateSMA(data, short);
-        const longSma = this.calculateSMA(data, long);
-
-        for (let i = long; i < data.length; i++) {
-          const currentPrice = data[i].close;
-          const prevShort = shortSma[i - 1];
-          const prevLong = longSma[i - 1];
-          const currShort = shortSma[i];
-          const currLong = longSma[i];
-
-          if (prevShort <= prevLong && currShort > currLong) {
-            if (virtualBalance > currentPrice) {
-              const sharesToBuy = Math.floor(virtualBalance / currentPrice);
-              virtualBalance -= sharesToBuy * currentPrice;
-              virtualShares += sharesToBuy;
-            }
-          } else if (prevShort >= prevLong && currShort < currLong) {
-            if (virtualShares > 0) {
-              virtualBalance += virtualShares * currentPrice;
-              virtualShares = 0;
-            }
-          }
-        }
-        
-        const finalValue = virtualBalance + (virtualShares > 0 ? virtualShares * data[data.length - 1].close : 0);
-        if (finalValue > bestProfit) {
-          bestProfit = finalValue;
-          bestShort = short;
-          bestLong = long;
-        }
+    for (let i = 0; i < data.length; i++) {
+      const close = data[i].close || data[i]; // dataがオブジェクト配列か数値配列か対応
+      if (i === 0) {
+        ema.push(close);
+        prevEma = close;
+      } else {
+        const currentEma = (close * k) + (prevEma * (1 - k));
+        ema.push(currentEma);
+        prevEma = currentEma;
       }
     }
-
-    this.parameters[symbol] = {
-      shortSMA: bestShort,
-      longSMA: bestLong,
-      expectedProfitRate: ((bestProfit - 100000) / 100000) * 100
-    };
-    await this.saveData();
-    return this.parameters[symbol];
+    return ema;
   }
+
+  calculateMACD(data) {
+    const ema12 = this.calculateEMA(data, 12);
+    const ema26 = this.calculateEMA(data, 26);
+    const macdLine = [];
+    for (let i = 0; i < data.length; i++) {
+      macdLine.push(ema12[i] - ema26[i]);
+    }
+    const signalLine = this.calculateEMA(macdLine, 9);
+    return { macdLine, signalLine };
+  }
+
+  calculateRSI(data, period = 14) {
+    const rsi = [];
+    let avgGain = 0;
+    let avgLoss = 0;
+
+    for (let i = 0; i < data.length; i++) {
+      if (i === 0) {
+        rsi.push(null);
+        continue;
+      }
+      const change = data[i].close - data[i - 1].close;
+      const gain = change > 0 ? change : 0;
+      const loss = change < 0 ? -change : 0;
+
+      if (i < period) {
+        avgGain += gain;
+        avgLoss += loss;
+        rsi.push(null);
+      } else if (i === period) {
+        avgGain /= period;
+        avgLoss /= period;
+        const rs = avgGain / (avgLoss === 0 ? 1 : avgLoss);
+        rsi.push(100 - (100 / (1 + rs)));
+      } else {
+        avgGain = ((avgGain * (period - 1)) + gain) / period;
+        avgLoss = ((avgLoss * (period - 1)) + loss) / period;
+        const rs = avgGain / (avgLoss === 0 ? 1 : avgLoss);
+        rsi.push(100 - (100 / (1 + rs)));
+      }
+    }
+    return rsi;
+  }
+
+  // ==== センチメント分析 ====
+
+  async analyzeSentiment(symbol) {
+    const newsTitles = await fetchNews(symbol);
+    if (newsTitles.length === 0) return 0;
+
+    let score = 0;
+    for (const title of newsTitles) {
+      const lowerTitle = title.toLowerCase();
+      for (const word of POSITIVE_WORDS) {
+        if (lowerTitle.includes(word)) score += 1;
+      }
+      for (const word of NEGATIVE_WORDS) {
+        if (lowerTitle.includes(word)) score -= 1;
+      }
+    }
+    return score;
+  }
+
+  // ==== メイン取引ロジック ====
 
   async checkAndTrade(symbol) {
     if (!this.isReady) return null;
 
-    if (!this.parameters[symbol]) {
-      await this.optimizeParameters(symbol);
-    }
-    const params = this.parameters[symbol];
-    if (!params) return null;
-
     const data = await fetchStockData(symbol, '1y', '1d');
-    if (data.length < params.longSMA) return null;
-
-    const shortSma = this.calculateSMA(data, params.shortSMA);
-    const longSma = this.calculateSMA(data, params.longSMA);
+    if (data.length < 50) return null; // データ不足
 
     const i = data.length - 1;
     const currentPrice = data[i].close;
+    let action = 'HOLD';
+
+    // 1. リスク管理（損切り・利確の優先評価）
+    if (this.portfolio[symbol] && this.portfolio[symbol].shares > 0) {
+      const avgPrice = this.portfolio[symbol].averagePrice;
+      const profitRate = (currentPrice - avgPrice) / avgPrice;
+
+      // 利確（+10%）
+      if (profitRate >= 0.10) {
+        await this.sell(symbol, this.portfolio[symbol].shares, currentPrice, 'TAKE_PROFIT');
+        return { symbol, action: 'TAKE_PROFIT', currentPrice };
+      }
+      // 損切り（-5%）
+      if (profitRate <= -0.05) {
+        await this.sell(symbol, this.portfolio[symbol].shares, currentPrice, 'STOP_LOSS');
+        return { symbol, action: 'STOP_LOSS', currentPrice };
+      }
+    }
+
+    // 2. テクニカル指標の計算
+    const shortSma = this.calculateSMA(data, 10);
+    const longSma = this.calculateSMA(data, 30);
+    const { macdLine, signalLine } = this.calculateMACD(data);
+    const rsi = this.calculateRSI(data, 14);
+
     const prevShort = shortSma[i - 1];
     const prevLong = longSma[i - 1];
     const currShort = shortSma[i];
     const currLong = longSma[i];
 
-    let action = 'HOLD';
+    const prevMacd = macdLine[i - 1];
+    const prevSignal = signalLine[i - 1];
+    const currMacd = macdLine[i];
+    const currSignal = signalLine[i];
 
-    if (prevShort <= prevLong && currShort > currLong) {
+    const currRsi = rsi[i];
+
+    // サインの判定
+    const isGoldenCross = prevShort <= prevLong && currShort > currLong;
+    const isDeadCross = prevShort >= prevLong && currShort < currLong;
+    const isMacdBullish = prevMacd <= prevSignal && currMacd > currSignal;
+    const isMacdBearish = prevMacd >= prevSignal && currMacd < currSignal;
+    const isRsiOversold = currRsi < 30;
+    const isRsiOverbought = currRsi > 70;
+
+    // 3. センチメント分析
+    const sentimentScore = await this.analyzeSentiment(symbol);
+
+    // 4. 複合判断による売買実行
+    // 買い条件: SMAゴールデンクロス、または (MACD強気 ＆ RSI売られすぎ)、かつ ニュースが極端に悪くないこと
+    if ((isGoldenCross || (isMacdBullish && isRsiOversold)) && sentimentScore > -2) {
       const investAmount = this.balance * 0.2;
       if (investAmount >= currentPrice) {
         const sharesToBuy = Math.floor(investAmount / currentPrice);
-        if (await this.buy(symbol, sharesToBuy, currentPrice)) {
+        if (sharesToBuy > 0 && await this.buy(symbol, sharesToBuy, currentPrice)) {
           action = 'BUY';
         }
       }
-    } else if (prevShort >= prevLong && currShort < currLong) {
+    } 
+    // 売り条件: SMAデッドクロス、または (MACD弱気 ＆ RSI買われすぎ)、または ニュースが極端に悪い
+    else if (isDeadCross || (isMacdBearish && isRsiOverbought) || sentimentScore <= -2) {
       if (this.portfolio[symbol] && this.portfolio[symbol].shares > 0) {
         const sharesToSell = this.portfolio[symbol].shares;
         if (await this.sell(symbol, sharesToSell, currentPrice)) {
@@ -248,7 +315,10 @@ export class BotEngine {
       action,
       currentPrice,
       shortSma: currShort,
-      longSma: currLong
+      longSma: currLong,
+      macd: currMacd,
+      rsi: currRsi,
+      sentimentScore
     };
   }
 }
