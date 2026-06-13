@@ -10,11 +10,32 @@ export class BotEngine {
     this.balance = initialBalance;
     this.portfolio = {};
     this.history = [];
-    this.parameters = {}; // 各銘柄の学習済みパラメータ
+    this.parameters = {}; 
     this.logs = [];
     this.dbState = null;
     this.isReady = false;
     this.isMarketPanicking = false;
+    this.dbError = false; // DB接続失敗フラグ
+  }
+
+  // 日本市場が開いている時間か判定する（平日 9:00〜11:30, 12:30〜15:00 JST）
+  isMarketOpen() {
+    // 現在の日本時間（JST）を取得
+    const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
+    const day = now.getDay();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const timeNum = hours * 100 + minutes; // 例: 9:30 => 930
+
+    // 土日（0=日曜, 6=土曜）は休場
+    if (day === 0 || day === 6) return false;
+
+    // 前場: 9:00(900) 〜 11:30(1130)
+    const isMorningSession = timeNum >= 900 && timeNum <= 1130;
+    // 後場: 12:30(1230) 〜 15:00(1500)
+    const isAfternoonSession = timeNum >= 1230 && timeNum <= 1500;
+
+    return isMorningSession || isAfternoonSession;
   }
 
   async initialize() {
@@ -39,10 +60,13 @@ export class BotEngine {
       this.parameters = state.parameters || {};
       this.logs = state.logs || [];
       this.isReady = true;
+      this.dbError = false;
       console.log('Bot data initialized from MongoDB');
     } catch (err) {
       console.error('Failed to load data from MongoDB (Running in memory mode)', err);
+      this.dbError = true;
       this.isReady = true;
+      await this.addLog('⚠️【重大な警告】データベース(MongoDB)に接続できません。データは保存されず初期化されています。MongoDBのIPアクセス制限(0.0.0.0/0)等を確認してください。');
     }
   }
 

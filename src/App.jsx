@@ -61,6 +61,14 @@ function App() {
         </div>
       </header>
 
+      {status.dbError && (
+        <div style={{ backgroundColor: 'rgba(239, 68, 68, 0.2)', border: '1px solid #ef4444', color: '#fca5a5', padding: '1rem', borderRadius: '8px', marginBottom: '1.5rem', fontSize: '0.95rem' }}>
+          <strong>⚠️ データベース接続エラー</strong><br />
+          現在MongoDBへの接続に失敗しており、BOTが「一時メモリモード」で動いています。この状態だと15分ごとにデータ（資産や保有株）がリセットされて消えてしまいます。<br />
+          MongoDBの管理画面で「Network Access」が <code>0.0.0.0/0</code> に設定されているか、またはRenderの <code>MONGODB_URI</code> が間違っていないか確認してください。
+        </div>
+      )}
+
       <div className="dashboard-grid">
         <div className="panel">
           <h2><DollarSign size={20} /> 総資産</h2>

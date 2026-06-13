@@ -6,6 +6,7 @@ import { BotEngine } from './backend/BotEngine.js';
 import { connectDB } from './backend/db.js';
 import { JAPAN_PRIME_SYMBOLS } from './backend/symbols.js';
 import dotenv from 'dotenv';
+import fetch from 'node-fetch'; // 念のため
 
 dotenv.config();
 
@@ -17,24 +18,30 @@ app.use(cors());
 app.use(express.json());
 
 const bot = new BotEngine(500000);
-let isRunning = false;
+// 初期状態を「稼働中」に変更（スリープから復帰しても自動で再開する）
+let isRunning = true;
 let botInterval = null;
 
-// バッチスキャン用のカーソル
 let scanIndex = 0;
-const BATCH_SIZE = 5; // 1回にチェックする銘柄数（API制限対策）
+const BATCH_SIZE = 5; 
 
 const runBotCycle = async () => {
-  // 米国市場のチェック（マクロ環境の監視）
+  if (!bot.isMarketOpen()) {
+    // 市場が閉まっている時間は数時間に1回ログを出す程度にしてスキップする
+    if (Math.random() < 0.05) {
+      await bot.addLog('🌙 現在は日本市場の営業時間外（夜間・休日または昼休み）です。待機中...');
+    }
+    return;
+  }
+
   await bot.checkMacroEnvironment();
 
-  // 日本株のバッチスキャン
   const symbolsToCheck = [];
   for (let i = 0; i < BATCH_SIZE; i++) {
     symbolsToCheck.push(JAPAN_PRIME_SYMBOLS[scanIndex]);
     scanIndex++;
     if (scanIndex >= JAPAN_PRIME_SYMBOLS.length) {
-      scanIndex = 0; // ループして最初に戻る
+      scanIndex = 0; 
     }
   }
 
@@ -64,14 +71,12 @@ app.get('/api/status', async (req, res) => {
     portfolio: bot.portfolio,
     history: bot.history,
     logs: bot.logs,
-    scanProgress: `${scanIndex} / ${JAPAN_PRIME_SYMBOLS.length}`
+    scanProgress: `${scanIndex} / ${JAPAN_PRIME_SYMBOLS.length}`,
+    dbError: bot.dbError // DB接続エラーをフロントエンドに伝える
   });
 });
 
 app.post('/api/toggle', async (req, res) => {
-  if (!bot.isReady) {
-    return res.status(500).json({ error: "DB not ready" });
-  }
   if (isRunning) {
     clearInterval(botInterval);
     isRunning = false;
@@ -79,10 +84,8 @@ app.post('/api/toggle', async (req, res) => {
   } else {
     isRunning = true;
     await bot.addLog('BOTを起動しました。デイトレスキャンを開始します...');
-    runBotCycle(); // 初回実行
-    botInterval = setInterval(() => {
-      runBotCycle();
-    }, 20000); // 20秒ごとにバッチスキャンを実行
+    runBotCycle(); 
+    botInterval = setInterval(runBotCycle, 20000);
   }
   res.json({ isRunning });
 });
@@ -98,5 +101,16 @@ app.listen(PORT, async () => {
   console.log(`Server is running on port ${PORT}`);
   await connectDB();
   await bot.initialize();
-  await bot.addLog('サーバーが起動しました。待機中...');
+  await bot.addLog('サーバーが起動しました。自動取引ループを開始します。');
+  
+  // 自動起動
+  runBotCycle();
+  botInterval = setInterval(runBotCycle, 20000);
+
+  // Renderのスリープ防止用（10分ごとに自分自身にアクセスする）
+  setInterval(() => {
+    const url = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+    console.log(`Self-pinging ${url} to prevent sleep...`);
+    fetch(url).catch(() => {});
+  }, 10 * 60 * 1000);
 });
