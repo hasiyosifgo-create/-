@@ -6,7 +6,6 @@ import { BotEngine } from './backend/BotEngine.js';
 import { connectDB } from './backend/db.js';
 import { JAPAN_PRIME_SYMBOLS } from './backend/symbols.js';
 import dotenv from 'dotenv';
-import fetch from 'node-fetch'; // 念のため
 
 dotenv.config();
 
