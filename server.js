@@ -4,6 +4,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { BotEngine } from './backend/BotEngine.js';
 import { connectDB } from './backend/db.js';
+import { JAPAN_PRIME_SYMBOLS } from './backend/symbols.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,20 +20,37 @@ const bot = new BotEngine(500000);
 let isRunning = false;
 let botInterval = null;
 
-const SYMBOLS = ['AAPL', 'MSFT', 'GOOGL', 'NVDA'];
+// バッチスキャン用のカーソル
+let scanIndex = 0;
+const BATCH_SIZE = 5; // 1回にチェックする銘柄数（API制限対策）
 
 const runBotCycle = async () => {
-  await bot.addLog('BOTが市場データを分析中...');
-  let traded = false;
-  for (const symbol of SYMBOLS) {
-    const result = await bot.checkAndTrade(symbol);
-    if (result && result.action !== 'HOLD') {
-      await bot.addLog(`${symbol}: ${result.action} シグナル検知 (価格: $${result.currentPrice.toFixed(2)})`);
-      traded = true;
+  // 米国市場のチェック（マクロ環境の監視）
+  await bot.checkMacroEnvironment();
+
+  // 日本株のバッチスキャン
+  const symbolsToCheck = [];
+  for (let i = 0; i < BATCH_SIZE; i++) {
+    symbolsToCheck.push(JAPAN_PRIME_SYMBOLS[scanIndex]);
+    scanIndex++;
+    if (scanIndex >= JAPAN_PRIME_SYMBOLS.length) {
+      scanIndex = 0; // ループして最初に戻る
     }
   }
-  if (!traded) {
-    await bot.addLog('新たな取引シグナルはありませんでした。');
+
+  await bot.addLog(`🔍 スキャン中... (${symbolsToCheck.join(', ')})`);
+  let traded = false;
+  
+  for (const symbol of symbolsToCheck) {
+    try {
+      const result = await bot.checkAndTrade(symbol);
+      if (result && result.action !== 'HOLD') {
+        await bot.addLog(`[${symbol}] ${result.action} 成立! (価格: ¥${result.currentPrice.toLocaleString()})`);
+        traded = true;
+      }
+    } catch (e) {
+      console.error(`Error checking ${symbol}:`, e);
+    }
   }
 };
 
@@ -42,7 +63,8 @@ app.get('/api/status', async (req, res) => {
     totalAssets,
     portfolio: bot.portfolio,
     history: bot.history,
-    logs: bot.logs
+    logs: bot.logs,
+    scanProgress: `${scanIndex} / ${JAPAN_PRIME_SYMBOLS.length}`
   });
 });
 
@@ -56,18 +78,17 @@ app.post('/api/toggle', async (req, res) => {
     await bot.addLog('BOTを停止しました。');
   } else {
     isRunning = true;
-    await bot.addLog('BOTを起動しました。初期分析を開始します...');
+    await bot.addLog('BOTを起動しました。デイトレスキャンを開始します...');
     runBotCycle(); // 初回実行
     botInterval = setInterval(() => {
       runBotCycle();
-    }, 15000);
+    }, 20000); // 20秒ごとにバッチスキャンを実行
   }
   res.json({ isRunning });
 });
 
 app.use(express.static(path.join(__dirname, 'dist')));
 
-// Express 5対応: '*' ではなく全てにマッチするミドルウェアとして使用
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });

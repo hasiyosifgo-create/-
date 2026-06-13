@@ -1,7 +1,6 @@
 import { fetchStockData, fetchCurrentPrice, fetchNews } from './yahoo.js';
 import { BotState } from './db.js';
 
-// 感情分析用のキーワード辞書
 const POSITIVE_WORDS = ['buy', 'up', 'bull', 'growth', 'profit', 'beats', 'positive', 'surge', 'record', 'gain', 'jump', 'upgrade', 'strong'];
 const NEGATIVE_WORDS = ['sell', 'down', 'bear', 'loss', 'misses', 'negative', 'drop', 'plunge', 'contaminated', 'lawsuit', 'panic', 'downgrade', 'weak', 'crash', 'fall'];
 
@@ -11,10 +10,11 @@ export class BotEngine {
     this.balance = initialBalance;
     this.portfolio = {};
     this.history = [];
-    this.parameters = {};
+    this.parameters = {}; // 各銘柄の学習済みパラメータ
     this.logs = [];
     this.dbState = null;
     this.isReady = false;
+    this.isMarketPanicking = false;
   }
 
   async initialize() {
@@ -83,19 +83,43 @@ export class BotEngine {
     return total;
   }
 
-  async buy(symbol, shares, price, reason = 'BUY') {
+  async checkMacroEnvironment() {
+    // 米国市場（S&P 500）の監視
+    const sp500 = await fetchStockData('^GSPC', '5d', '1d');
+    if (sp500.length >= 2) {
+      const yesterday = sp500[sp500.length - 2].close;
+      const today = sp500[sp500.length - 1].close;
+      const dropRate = (today - yesterday) / yesterday;
+      
+      if (dropRate < -0.02) { // 2%以上の下落でパニックと判定
+        if (!this.isMarketPanicking) {
+          await this.addLog('⚠️ 米国市場(S&P 500)で2%以上の暴落を検知。新規購入を一時停止（連れ安警戒）します。');
+          this.isMarketPanicking = true;
+        }
+      } else {
+        if (this.isMarketPanicking) {
+          await this.addLog('✅ 米国市場のパニックが収まりました。新規購入を再開します。');
+          this.isMarketPanicking = false;
+        }
+      }
+    }
+  }
+
+  async buy(symbol, shares, price, currentState) {
     const cost = shares * price;
     if (this.balance >= cost) {
       this.balance -= cost;
       if (!this.portfolio[symbol]) {
-        this.portfolio[symbol] = { shares: 0, averagePrice: 0 };
+        this.portfolio[symbol] = { shares: 0, averagePrice: 0, buyState: null };
       }
       const p = this.portfolio[symbol];
       const newTotalShares = p.shares + shares;
       p.averagePrice = ((p.shares * p.averagePrice) + cost) / newTotalShares;
       p.shares = newTotalShares;
+      // 買った瞬間の状態（RSIや感情）を記憶
+      p.buyState = currentState;
 
-      this.recordHistory(reason, symbol, shares, price);
+      this.recordHistory('BUY', symbol, shares, price);
       await this.saveData();
       return true;
     }
@@ -108,6 +132,11 @@ export class BotEngine {
       this.balance += revenue;
       this.portfolio[symbol].shares -= shares;
 
+      // 損切りの場合、自己学習（反省）を実行
+      if (reason === 'STOP_LOSS') {
+        await this.analyzeMistake(symbol, price);
+      }
+
       if (this.portfolio[symbol].shares === 0) {
         delete this.portfolio[symbol];
       }
@@ -117,6 +146,35 @@ export class BotEngine {
       return true;
     }
     return false;
+  }
+
+  async analyzeMistake(symbol, currentPrice) {
+    const buyState = this.portfolio[symbol].buyState;
+    if (!buyState) return;
+
+    if (!this.parameters[symbol]) this.parameters[symbol] = {};
+    const params = this.parameters[symbol];
+    
+    let analysisMsg = `${symbol} 損切り反省: `;
+    
+    // ニュース感情起因の可能性（買った時はポジティブだった）
+    if (buyState.sentimentScore >= 0) {
+      // 感情スコアの閾値を厳しくする
+      params.minSentiment = (params.minSentiment || 0) + 1;
+      analysisMsg += `ニュース急変リスクを学習。要求スコアを ${params.minSentiment} に引き上げ。`;
+    } 
+    // RSI高値掴みの可能性
+    else if (buyState.rsi > 40) {
+      params.maxRsi = Math.max(30, (params.maxRsi || 70) - 5);
+      analysisMsg += `高値掴みを学習。RSI上限を ${params.maxRsi} に引き下げ。`;
+    }
+    // MACDの騙し
+    else {
+      params.macdStrict = true;
+      analysisMsg += `MACDのダマシを学習。判定条件を厳格化。`;
+    }
+
+    await this.addLog(analysisMsg);
   }
 
   recordHistory(type, symbol, shares, price) {
@@ -155,7 +213,7 @@ export class BotEngine {
     let prevEma = null;
 
     for (let i = 0; i < data.length; i++) {
-      const close = data[i].close || data[i]; // dataがオブジェクト配列か数値配列か対応
+      const close = data[i].close || data[i];
       if (i === 0) {
         ema.push(close);
         prevEma = close;
@@ -212,8 +270,6 @@ export class BotEngine {
     return rsi;
   }
 
-  // ==== センチメント分析 ====
-
   async analyzeSentiment(symbol) {
     const newsTitles = await fetchNews(symbol);
     if (newsTitles.length === 0) return 0;
@@ -231,36 +287,37 @@ export class BotEngine {
     return score;
   }
 
-  // ==== メイン取引ロジック ====
-
   async checkAndTrade(symbol) {
     if (!this.isReady) return null;
 
-    const data = await fetchStockData(symbol, '1y', '1d');
-    if (data.length < 50) return null; // データ不足
+    // 5分足データで直近60日分（デイトレ用）を取得
+    const data = await fetchStockData(symbol, '60d', '5m');
+    if (data.length < 50) return null;
 
     const i = data.length - 1;
     const currentPrice = data[i].close;
     let action = 'HOLD';
 
-    // 1. リスク管理（損切り・利確の優先評価）
+    // 1. リスク管理（損切り・利確）
     if (this.portfolio[symbol] && this.portfolio[symbol].shares > 0) {
       const avgPrice = this.portfolio[symbol].averagePrice;
       const profitRate = (currentPrice - avgPrice) / avgPrice;
 
-      // 利確（+10%）
       if (profitRate >= 0.10) {
         await this.sell(symbol, this.portfolio[symbol].shares, currentPrice, 'TAKE_PROFIT');
         return { symbol, action: 'TAKE_PROFIT', currentPrice };
       }
-      // 損切り（-5%）
       if (profitRate <= -0.05) {
         await this.sell(symbol, this.portfolio[symbol].shares, currentPrice, 'STOP_LOSS');
         return { symbol, action: 'STOP_LOSS', currentPrice };
       }
     }
 
-    // 2. テクニカル指標の計算
+    // パラメータの取得（自己学習で厳しくなっている可能性がある）
+    const params = this.parameters[symbol] || {};
+    const maxAllowedRsi = params.maxRsi || 70;
+    const minRequiredSentiment = params.minSentiment || -2;
+
     const shortSma = this.calculateSMA(data, 10);
     const longSma = this.calculateSMA(data, 30);
     const { macdLine, signalLine } = this.calculateMACD(data);
@@ -278,30 +335,26 @@ export class BotEngine {
 
     const currRsi = rsi[i];
 
-    // サインの判定
     const isGoldenCross = prevShort <= prevLong && currShort > currLong;
     const isDeadCross = prevShort >= prevLong && currShort < currLong;
-    const isMacdBullish = prevMacd <= prevSignal && currMacd > currSignal;
-    const isMacdBearish = prevMacd >= prevSignal && currMacd < currSignal;
-    const isRsiOversold = currRsi < 30;
-    const isRsiOverbought = currRsi > 70;
+    const isMacdBullish = params.macdStrict ? (prevMacd < 0 && currMacd > currSignal) : (currMacd > currSignal);
+    const isMacdBearish = currMacd < currSignal;
 
-    // 3. センチメント分析
     const sentimentScore = await this.analyzeSentiment(symbol);
 
-    // 4. 複合判断による売買実行
-    // 買い条件: SMAゴールデンクロス、または (MACD強気 ＆ RSI売られすぎ)、かつ ニュースが極端に悪くないこと
-    if ((isGoldenCross || (isMacdBullish && isRsiOversold)) && sentimentScore > -2) {
-      const investAmount = this.balance * 0.2;
+    // 買い条件 (米国市場がパニックでないこと)
+    if (!this.isMarketPanicking && (isGoldenCross || isMacdBullish) && currRsi < maxAllowedRsi && sentimentScore >= minRequiredSentiment) {
+      const investAmount = this.balance * 0.1; // 分散投資のため10%に変更
       if (investAmount >= currentPrice) {
         const sharesToBuy = Math.floor(investAmount / currentPrice);
-        if (sharesToBuy > 0 && await this.buy(symbol, sharesToBuy, currentPrice)) {
+        const currentState = { rsi: currRsi, macd: currMacd, sentimentScore, price: currentPrice };
+        if (sharesToBuy > 0 && await this.buy(symbol, sharesToBuy, currentPrice, currentState)) {
           action = 'BUY';
         }
       }
     } 
-    // 売り条件: SMAデッドクロス、または (MACD弱気 ＆ RSI買われすぎ)、または ニュースが極端に悪い
-    else if (isDeadCross || (isMacdBearish && isRsiOverbought) || sentimentScore <= -2) {
+    // 売り条件
+    else if (isDeadCross || isMacdBearish || sentimentScore <= -3) {
       if (this.portfolio[symbol] && this.portfolio[symbol].shares > 0) {
         const sharesToSell = this.portfolio[symbol].shares;
         if (await this.sell(symbol, sharesToSell, currentPrice)) {
