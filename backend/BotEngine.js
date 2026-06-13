@@ -344,11 +344,18 @@ export class BotEngine {
 
     // 買い条件 (米国市場がパニックでないこと)
     if (!this.isMarketPanicking && (isGoldenCross || isMacdBullish) && currRsi < maxAllowedRsi && sentimentScore >= minRequiredSentiment) {
-      const investAmount = this.balance * 0.1; // 分散投資のため10%に変更
-      if (investAmount >= currentPrice) {
-        const sharesToBuy = Math.floor(investAmount / currentPrice);
+      if (this.balance >= currentPrice * 100) { // 最低1単元（100株）買える全資金があるか確認
+        // 基本は資金の20%を投資。ただし100株に満たない場合は最低ラインの100株に変更
+        let targetShares = Math.floor((this.balance * 0.2) / currentPrice);
+        targetShares = Math.floor(targetShares / 100) * 100;
+        if (targetShares === 0) targetShares = 100; 
+
+        // 念のため、現在持っている全資金で買える最大株数を超えないように調整
+        const affordableShares = Math.floor(this.balance / currentPrice / 100) * 100;
+        const sharesToBuy = Math.min(targetShares, affordableShares);
+
         const currentState = { rsi: currRsi, macd: currMacd, sentimentScore, price: currentPrice };
-        if (sharesToBuy > 0 && await this.buy(symbol, sharesToBuy, currentPrice, currentState)) {
+        if (sharesToBuy >= 100 && await this.buy(symbol, sharesToBuy, currentPrice, currentState)) {
           action = 'BUY';
         }
       }

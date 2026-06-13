@@ -69,6 +69,16 @@ function App() {
             損益: {profit >= 0 ? '+' : ''}¥{profit.toLocaleString(undefined, { maximumFractionDigits: 0 })}
             ({((profit / status.initialBalance) * 100).toFixed(2)}%)
           </div>
+          <div style={{ marginTop: '1rem', padding: '0.75rem', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: '8px', fontSize: '0.9rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+              <span className="text-muted">現金残高 (買付余力):</span>
+              <span style={{ fontWeight: 500 }}>¥{status.balance.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span className="text-muted">株式評価額:</span>
+              <span style={{ fontWeight: 500 }}>¥{(status.totalAssets - status.balance).toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+            </div>
+          </div>
           <button 
             className="btn" 
             style={{ marginTop: '1.5rem', width: '100%', justifyContent: 'center' }}
@@ -115,7 +125,7 @@ function App() {
                   <tr key={symbol}>
                     <td style={{ fontWeight: 600 }}>{symbol}</td>
                     <td>{status.portfolio[symbol].shares} 株</td>
-                    <td>${status.portfolio[symbol].averagePrice.toFixed(2)}</td>
+                    <td>¥{status.portfolio[symbol].averagePrice.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
                   </tr>
                 ))}
               </tbody>
@@ -162,8 +172,8 @@ function App() {
                     </td>
                     <td style={{ fontWeight: 600 }}>{item.symbol}</td>
                     <td>{item.shares}</td>
-                    <td>${item.price.toFixed(2)}</td>
-                    <td>${item.total.toFixed(2)}</td>
+                    <td>¥{item.price.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                    <td>¥{item.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                   </tr>
                 ))}
               </tbody>
