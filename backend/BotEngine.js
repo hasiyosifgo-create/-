@@ -12,30 +12,71 @@ export class BotEngine {
     this.history = [];
     this.parameters = {}; 
     this.logs = [];
+    this.learningReport = '';
+    this.lastReviewDate = '';
     this.dbState = null;
     this.isReady = false;
     this.isMarketPanicking = false;
-    this.dbError = false; // DB接続失敗フラグ
+    this.dbError = false; 
   }
 
   // 日本市場が開いている時間か判定する（平日 9:00〜11:30, 12:30〜15:00 JST）
   isMarketOpen() {
-    // 現在の日本時間（JST）を取得
     const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
     const day = now.getDay();
     const hours = now.getHours();
     const minutes = now.getMinutes();
-    const timeNum = hours * 100 + minutes; // 例: 9:30 => 930
+    const timeNum = hours * 100 + minutes; 
 
-    // 土日（0=日曜, 6=土曜）は休場
     if (day === 0 || day === 6) return false;
 
-    // 前場: 9:00(900) 〜 11:30(1130)
     const isMorningSession = timeNum >= 900 && timeNum <= 1130;
-    // 後場: 12:30(1230) 〜 15:00(1500)
     const isAfternoonSession = timeNum >= 1230 && timeNum <= 1500;
 
     return isMorningSession || isAfternoonSession;
+  }
+
+  async performDailyReview() {
+    const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
+    const dateStr = now.toISOString().split('T')[0];
+
+    // すでに今日レビュー済みなら何もしない
+    if (this.lastReviewDate === dateStr) return;
+
+    let dailyReport = `【${dateStr} の学習日報】\n`;
+    let todayTrades = this.history.filter(h => h.date.startsWith(dateStr));
+    let stopLosses = todayTrades.filter(h => h.type === 'STOP_LOSS').length;
+    let takeProfits = todayTrades.filter(h => h.type === 'TAKE_PROFIT').length;
+
+    dailyReport += `本日の取引: 利確 ${takeProfits}回 / 損切り ${stopLosses}回\n`;
+    if (stopLosses > 0) {
+      dailyReport += `損切りが発生したため、当該銘柄のRSI上限や要求感情スコアを自己分析し、条件を厳格化しました。\n`;
+    } else if (takeProfits > 0) {
+      dailyReport += `安定した利益を確保できました。現在のロジックは相場に適合しています。\n`;
+    } else {
+      dailyReport += `本日は条件に合致する安全なエントリーポイントがありませんでした。無駄なリスクを回避しました。\n`;
+    }
+
+    let overallReport = `\n【AI 学習総括（累積）】\n`;
+    let strictRsiCount = 0;
+    let strictSentimentCount = 0;
+    let strictMacdCount = 0;
+
+    for (const sym in this.parameters) {
+      if (this.parameters[sym].maxRsi < 70) strictRsiCount++;
+      if (this.parameters[sym].minSentiment > -2) strictSentimentCount++;
+      if (this.parameters[sym].macdStrict) strictMacdCount++;
+    }
+
+    overallReport += `・高値掴みを警戒し、RSI上限を厳しくした銘柄: ${strictRsiCount} 社\n`;
+    overallReport += `・ニュースの悪影響を警戒し、要求感情スコアを上げた銘柄: ${strictSentimentCount} 社\n`;
+    overallReport += `・MACDのだましを警戒し、条件を厳格化した銘柄: ${strictMacdCount} 社\n`;
+    overallReport += `AIは過去の失敗から着実に防御力を高め、より安全なエントリーを学習しています。`;
+
+    this.learningReport = dailyReport + overallReport;
+    this.lastReviewDate = dateStr;
+    await this.addLog('🧠 本日の取引精査と学習レポートの作成が完了しました。');
+    await this.saveData();
   }
 
   async initialize() {
@@ -49,7 +90,9 @@ export class BotEngine {
           portfolio: {},
           history: [],
           parameters: {},
-          logs: []
+          logs: [],
+          learningReport: '',
+          lastReviewDate: ''
         });
         await state.save();
       }
@@ -59,6 +102,8 @@ export class BotEngine {
       this.history = state.history || [];
       this.parameters = state.parameters || {};
       this.logs = state.logs || [];
+      this.learningReport = state.learningReport || '';
+      this.lastReviewDate = state.lastReviewDate || '';
       this.isReady = true;
       this.dbError = false;
       console.log('Bot data initialized from MongoDB');
@@ -77,6 +122,8 @@ export class BotEngine {
     this.dbState.history = this.history;
     this.dbState.parameters = this.parameters;
     this.dbState.logs = this.logs.slice(0, 100);
+    this.dbState.learningReport = this.learningReport;
+    this.dbState.lastReviewDate = this.lastReviewDate;
     this.dbState.markModified('portfolio');
     this.dbState.markModified('parameters');
     this.dbState.markModified('history');

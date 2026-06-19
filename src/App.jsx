@@ -129,13 +129,19 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {Object.keys(status.portfolio).map(symbol => (
-                  <tr key={symbol}>
-                    <td style={{ fontWeight: 600 }}>{symbol}</td>
-                    <td>{status.portfolio[symbol].shares} 株</td>
-                    <td>¥{status.portfolio[symbol].averagePrice.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                  </tr>
-                ))}
+                {Object.keys(status.portfolio).map(symbol => {
+                  const companyName = status.symbolsMap?.[symbol] || symbol;
+                  return (
+                    <tr key={symbol}>
+                      <td style={{ fontWeight: 600 }}>
+                        {companyName} <br />
+                        <span className="text-muted" style={{ fontSize: '0.8rem', fontWeight: 'normal' }}>{symbol}</span>
+                      </td>
+                      <td>{status.portfolio[symbol].shares} 株</td>
+                      <td>¥{status.portfolio[symbol].averagePrice.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -150,6 +156,13 @@ function App() {
               </div>
             ))}
             {status.logs.length === 0 && <div className="text-muted">ログはありません</div>}
+          </div>
+        </div>
+
+        <div className="panel" style={{ gridColumn: '1 / -1' }}>
+          <h2><BrainCircuit size={20} /> AI 学習・分析レポート</h2>
+          <div style={{ backgroundColor: 'rgba(0,0,0,0.2)', padding: '1rem', borderRadius: '8px', whiteSpace: 'pre-wrap', fontSize: '0.9rem', lineHeight: '1.6' }}>
+            {status.learningReport || '現在データを収集中です。日本市場が閉まった後（15:00以降）に最初の学習レポートが生成されます。'}
           </div>
         </div>
 
@@ -172,18 +185,24 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {status.history.map((item) => (
-                  <tr key={item.id}>
-                    <td>{new Date(item.date).toLocaleString()}</td>
-                    <td>
-                      <span className={`badge ${item.type.toLowerCase()}`}>{item.type}</span>
-                    </td>
-                    <td style={{ fontWeight: 600 }}>{item.symbol}</td>
-                    <td>{item.shares}</td>
-                    <td>¥{item.price.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                    <td>¥{item.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                  </tr>
-                ))}
+                {status.history.map((item) => {
+                  const companyName = status.symbolsMap?.[item.symbol] || item.symbol;
+                  return (
+                    <tr key={item.id}>
+                      <td>{new Date(item.date).toLocaleString()}</td>
+                      <td>
+                        <span className={`badge ${item.type.toLowerCase()}`}>{item.type}</span>
+                      </td>
+                      <td style={{ fontWeight: 600 }}>
+                        {companyName} <br />
+                        <span className="text-muted" style={{ fontSize: '0.8rem', fontWeight: 'normal' }}>{item.symbol}</span>
+                      </td>
+                      <td>{item.shares}</td>
+                      <td>¥{item.price.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
+                      <td>¥{item.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

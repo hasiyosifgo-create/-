@@ -10,7 +10,9 @@ const botStateSchema = new mongoose.Schema({
   portfolio: { type: mongoose.Schema.Types.Mixed, default: {} },
   history: { type: Array, default: [] },
   parameters: { type: mongoose.Schema.Types.Mixed, default: {} },
-  logs: { type: Array, default: [] }
+  logs: { type: Array, default: [] },
+  learningReport: { type: String, default: '' },
+  lastReviewDate: { type: String, default: '' }
 });
 
 export const BotState = mongoose.model('BotState', botStateSchema);

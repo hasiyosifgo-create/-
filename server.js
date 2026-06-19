@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { BotEngine } from './backend/BotEngine.js';
 import { connectDB } from './backend/db.js';
-import { JAPAN_PRIME_SYMBOLS } from './backend/symbols.js';
+import { JAPAN_PRIME_SYMBOLS, JAPAN_PRIME_SYMBOLS_MAP } from './backend/symbols.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -25,6 +25,14 @@ let scanIndex = 0;
 const BATCH_SIZE = 5; 
 
 const runBotCycle = async () => {
+  const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
+  const hours = now.getHours();
+
+  // 15:00以降（15時〜23時）なら学習レポート作成（日次レビュー）を実行
+  if (hours >= 15) {
+    await bot.performDailyReview();
+  }
+
   if (!bot.isMarketOpen()) {
     // 市場が閉まっている時間は数時間に1回ログを出す程度にしてスキップする
     if (Math.random() < 0.05) {
@@ -51,7 +59,8 @@ const runBotCycle = async () => {
     try {
       const result = await bot.checkAndTrade(symbol);
       if (result && result.action !== 'HOLD') {
-        await bot.addLog(`[${symbol}] ${result.action} 成立! (価格: ¥${result.currentPrice.toLocaleString()})`);
+        const companyName = JAPAN_PRIME_SYMBOLS_MAP[symbol] || symbol;
+        await bot.addLog(`[${companyName}] ${result.action} 成立! (価格: ¥${result.currentPrice.toLocaleString()})`);
         traded = true;
       }
     } catch (e) {
@@ -71,7 +80,9 @@ app.get('/api/status', async (req, res) => {
     history: bot.history,
     logs: bot.logs,
     scanProgress: `${scanIndex} / ${JAPAN_PRIME_SYMBOLS.length}`,
-    dbError: bot.dbError // DB接続エラーをフロントエンドに伝える
+    dbError: bot.dbError,
+    learningReport: bot.learningReport,
+    symbolsMap: JAPAN_PRIME_SYMBOLS_MAP
   });
 });
 
