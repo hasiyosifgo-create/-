@@ -59,7 +59,7 @@ const runBotCycle = async () => {
     try {
       const result = await bot.checkAndTrade(symbol);
       if (result && result.action !== 'HOLD') {
-        const companyName = JAPAN_PRIME_SYMBOLS_MAP[symbol] || symbol;
+        const companyName = JAPAN_PRIME_SYMBOLS_MAP[symbol]?.name || symbol;
         await bot.addLog(`[${companyName}] ${result.action} 成立! (価格: ¥${result.currentPrice.toLocaleString()})`);
         traded = true;
       }

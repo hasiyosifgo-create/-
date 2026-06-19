@@ -18,6 +18,8 @@ export class BotEngine {
     this.isReady = false;
     this.isMarketPanicking = false;
     this.dbError = false; 
+    this.macroSentiment = 0; // マクロ経済ニュースの感情スコア
+    this.latestTrends = {}; // 各銘柄の直近のトレンド状態（1: 上昇, -1: 下落）
   }
 
   // 日本市場が開いている時間か判定する（平日 9:00〜11:30, 12:30〜15:00 JST）
@@ -61,17 +63,23 @@ export class BotEngine {
     let strictRsiCount = 0;
     let strictSentimentCount = 0;
     let strictMacdCount = 0;
+    let strictSectorCount = 0;
+    let strictMacroCount = 0;
 
     for (const sym in this.parameters) {
       if (this.parameters[sym].maxRsi < 70) strictRsiCount++;
       if (this.parameters[sym].minSentiment > -2) strictSentimentCount++;
       if (this.parameters[sym].macdStrict) strictMacdCount++;
+      if (this.parameters[sym].sectorStrict) strictSectorCount++;
+      if (this.parameters[sym].macroStrict) strictMacroCount++;
     }
 
     overallReport += `・高値掴みを警戒し、RSI上限を厳しくした銘柄: ${strictRsiCount} 社\n`;
     overallReport += `・ニュースの悪影響を警戒し、要求感情スコアを上げた銘柄: ${strictSentimentCount} 社\n`;
     overallReport += `・MACDのだましを警戒し、条件を厳格化した銘柄: ${strictMacdCount} 社\n`;
-    overallReport += `AIは過去の失敗から着実に防御力を高め、より安全なエントリーを学習しています。`;
+    overallReport += `・同業他社の下落（セクター不況）への巻き込まれを警戒している銘柄: ${strictSectorCount} 社\n`;
+    overallReport += `・政治・為替などマクロ経済悪化の影響を受けやすいと判断した銘柄: ${strictMacroCount} 社\n`;
+    overallReport += `AIは個別のチャートだけでなく、政治・業界全体の動向も踏まえて防御力を高めています。`;
 
     this.learningReport = dailyReport + overallReport;
     this.lastReviewDate = dateStr;
@@ -174,6 +182,11 @@ export class BotEngine {
         }
       }
     }
+
+    // 日本の政治・為替などマクロニュース感情を計算
+    const nikkeiNewsScore = await this.analyzeSentiment('^N225');
+    const usdJpyNewsScore = await this.analyzeSentiment('JPY=X');
+    this.macroSentiment = nikkeiNewsScore + usdJpyNewsScore;
   }
 
   async buy(symbol, shares, price, currentState) {
@@ -201,6 +214,10 @@ export class BotEngine {
     if (this.portfolio[symbol] && this.portfolio[symbol].shares >= shares) {
       const revenue = shares * price;
       this.balance += revenue;
+      
+      const avgPrice = this.portfolio[symbol].averagePrice;
+      const profitLoss = (price - avgPrice) * shares; // 売却時の損益を計算
+
       this.portfolio[symbol].shares -= shares;
 
       // 損切りの場合、自己学習（反省）を実行
@@ -212,7 +229,7 @@ export class BotEngine {
         delete this.portfolio[symbol];
       }
 
-      this.recordHistory(reason, symbol, shares, price);
+      this.recordHistory(reason, symbol, shares, price, profitLoss);
       await this.saveData();
       return true;
     }
@@ -226,13 +243,24 @@ export class BotEngine {
     if (!this.parameters[symbol]) this.parameters[symbol] = {};
     const params = this.parameters[symbol];
     
+    // 企業情報からセクター情報を取得 (このファイルの上部にimportが必要だが、サーバ側で追加済み想定)
+    // 実際には checkAndTrade で計算された値を使用
     let analysisMsg = `${symbol} 損切り反省: `;
     
+    // セクター全体の不況への巻き込まれ
+    if (buyState.sectorTrend < 0 && !params.sectorStrict) {
+      params.sectorStrict = true;
+      analysisMsg += `同業他社の下落への巻き込まれを学習。今後は同業界全体のトレンドが上向きの時のみ購入。`;
+    }
+    // マクロ経済(政治・為替)の悪化
+    else if (buyState.macroSentiment < 0 && !params.macroStrict) {
+      params.macroStrict = true;
+      analysisMsg += `政治・為替の悪化に弱いことを学習。マクロ環境が良好な時のみ購入するよう制限。`;
+    }
     // ニュース感情起因の可能性（買った時はポジティブだった）
-    if (buyState.sentimentScore >= 0) {
-      // 感情スコアの閾値を厳しくする
+    else if (buyState.sentimentScore >= 0) {
       params.minSentiment = (params.minSentiment || 0) + 1;
-      analysisMsg += `ニュース急変リスクを学習。要求スコアを ${params.minSentiment} に引き上げ。`;
+      analysisMsg += `個別ニュース急変リスクを学習。要求スコアを ${params.minSentiment} に引き上げ。`;
     } 
     // RSI高値掴みの可能性
     else if (buyState.rsi > 40) {
@@ -248,7 +276,7 @@ export class BotEngine {
     await this.addLog(analysisMsg);
   }
 
-  recordHistory(type, symbol, shares, price) {
+  recordHistory(type, symbol, shares, price, profitLoss = 0) {
     this.history.unshift({
       id: Date.now().toString() + Math.random().toString(),
       date: new Date().toISOString(),
@@ -256,7 +284,8 @@ export class BotEngine {
       symbol,
       shares,
       price,
-      total: shares * price
+      total: shares * price,
+      profitLoss: profitLoss
     });
   }
 
@@ -411,21 +440,45 @@ export class BotEngine {
     const isMacdBullish = params.macdStrict ? (prevMacd < 0 && currMacd > currSignal) : (currMacd > currSignal);
     const isMacdBearish = currMacd < currSignal;
 
+    // トレンド情報をキャッシュ（1: 上昇トレンド, -1: 下落トレンド）
+    this.latestTrends[symbol] = isMacdBullish ? 1 : -1;
+
+    // JAPAN_PRIME_SYMBOLS_MAP を利用してセクター（同業界）全体のトレンドを判定
+    let sectorTrendScore = 0;
+    // 動的にインポートするか、あるいはグローバルにアクセスする（ここでは簡易的に判定）
+    if (typeof process !== 'undefined') {
+      import('./symbols.js').then(module => {
+        const JAPAN_PRIME_SYMBOLS_MAP = module.JAPAN_PRIME_SYMBOLS_MAP;
+        const mySector = JAPAN_PRIME_SYMBOLS_MAP[symbol]?.sector;
+        if (mySector) {
+          for (const sym in this.latestTrends) {
+            if (JAPAN_PRIME_SYMBOLS_MAP[sym]?.sector === mySector) {
+              sectorTrendScore += this.latestTrends[sym];
+            }
+          }
+        }
+      }).catch(() => {});
+    }
+
     const sentimentScore = await this.analyzeSentiment(symbol);
 
-    // 買い条件 (米国市場がパニックでないこと)
-    if (!this.isMarketPanicking && (isGoldenCross || isMacdBullish) && currRsi < maxAllowedRsi && sentimentScore >= minRequiredSentiment) {
+    // AI学習に基づく追加の買い制限チェック
+    let allowedByLearning = true;
+    if (params.sectorStrict && sectorTrendScore < 0) allowedByLearning = false;
+    if (params.macroStrict && this.macroSentiment < 0) allowedByLearning = false;
+
+    // 買い条件 (米国市場がパニックでないこと ＋ 学習条件クリア)
+    if (!this.isMarketPanicking && allowedByLearning && (isGoldenCross || isMacdBullish) && currRsi < maxAllowedRsi && sentimentScore >= minRequiredSentiment) {
       if (this.balance >= currentPrice * 100) { // 最低1単元（100株）買える全資金があるか確認
-        // 基本は資金の20%を投資。ただし100株に満たない場合は最低ラインの100株に変更
         let targetShares = Math.floor((this.balance * 0.2) / currentPrice);
         targetShares = Math.floor(targetShares / 100) * 100;
         if (targetShares === 0) targetShares = 100; 
 
-        // 念のため、現在持っている全資金で買える最大株数を超えないように調整
         const affordableShares = Math.floor(this.balance / currentPrice / 100) * 100;
         const sharesToBuy = Math.min(targetShares, affordableShares);
 
-        const currentState = { rsi: currRsi, macd: currMacd, sentimentScore, price: currentPrice };
+        // 買った瞬間の全情報（セクタートレンド、マクロ感情含む）を保存
+        const currentState = { rsi: currRsi, macd: currMacd, sentimentScore, price: currentPrice, sectorTrend: sectorTrendScore, macroSentiment: this.macroSentiment };
         if (sharesToBuy >= 100 && await this.buy(symbol, sharesToBuy, currentPrice, currentState)) {
           action = 'BUY';
         }

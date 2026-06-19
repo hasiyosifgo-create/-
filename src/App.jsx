@@ -130,7 +130,7 @@ function App() {
               </thead>
               <tbody>
                 {Object.keys(status.portfolio).map(symbol => {
-                  const companyName = status.symbolsMap?.[symbol] || symbol;
+                  const companyName = status.symbolsMap?.[symbol]?.name || symbol;
                   return (
                     <tr key={symbol}>
                       <td style={{ fontWeight: 600 }}>
@@ -182,11 +182,12 @@ function App() {
                   <th>株数</th>
                   <th>単価</th>
                   <th>総額</th>
+                  <th>確定損益</th>
                 </tr>
               </thead>
               <tbody>
                 {status.history.map((item) => {
-                  const companyName = status.symbolsMap?.[item.symbol] || item.symbol;
+                  const companyName = status.symbolsMap?.[item.symbol]?.name || item.symbol;
                   return (
                     <tr key={item.id}>
                       <td>{new Date(item.date).toLocaleString()}</td>
@@ -200,6 +201,13 @@ function App() {
                       <td>{item.shares}</td>
                       <td>¥{item.price.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
                       <td>¥{item.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                      <td style={{ fontWeight: 600, color: item.profitLoss > 0 ? '#10b981' : (item.profitLoss < 0 ? '#ef4444' : 'inherit') }}>
+                        {item.type !== 'BUY' && item.profitLoss !== undefined ? (
+                          <>
+                            {item.profitLoss > 0 ? '+' : ''}¥{item.profitLoss.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          </>
+                        ) : '-'}
+                      </td>
                     </tr>
                   );
                 })}
