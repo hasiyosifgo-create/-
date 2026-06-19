@@ -80,7 +80,29 @@ export class BotEngine {
     overallReport += `・MACDのだましを警戒し、条件を厳格化した銘柄: ${strictMacdCount} 社\n`;
     overallReport += `・同業他社の下落（セクター不況）への巻き込まれを警戒している銘柄: ${strictSectorCount} 社\n`;
     overallReport += `・政治・為替などマクロ経済悪化の影響を受けやすいと判断した銘柄: ${strictMacroCount} 社\n`;
-    overallReport += `AIは個別のチャートだけでなく、政治・業界全体の動向も踏まえて防御力を高めています。`;
+    overallReport += `AIは個別のチャートだけでなく、政治・業界全体の動向も踏まえて防御力を高めています。\n`;
+
+    // ブラックリスト出力
+    let bannedCount = 0;
+    let bannedNames = [];
+    if (typeof process !== 'undefined') {
+      try {
+        const module = await import('./symbols.js');
+        const JAPAN_PRIME_SYMBOLS_MAP = module.JAPAN_PRIME_SYMBOLS_MAP;
+        for (const sym in this.parameters) {
+          if (this.parameters[sym].isBanned) {
+            bannedCount++;
+            bannedNames.push(JAPAN_PRIME_SYMBOLS_MAP[sym]?.name || sym);
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (bannedCount > 0) {
+      overallReport += `\n⛔ 【ブラックリスト（永久凍結）】: ${bannedCount} 社\n`;
+      overallReport += `   対象: ${bannedNames.join(', ')}\n`;
+      overallReport += `   ※3連続の損切りを記録したため、システムとの相性が極悪と判断し以後の取引を停止しています。\n`;
+    }
 
     this.learningReport = dailyReport + overallReport;
     this.lastReviewDate = dateStr;
@@ -239,9 +261,30 @@ export class BotEngine {
 
       this.portfolio[symbol].shares -= shares;
 
-      // 損切りの場合、自己学習（反省）を実行
+      // 損切りの場合、自己学習（反省）を実行し連敗カウントを加算
       if (reason === 'STOP_LOSS') {
+        if (!this.parameters[symbol]) this.parameters[symbol] = {};
+        this.parameters[symbol].consecutiveLosses = (this.parameters[symbol].consecutiveLosses || 0) + 1;
+
+        if (this.parameters[symbol].consecutiveLosses >= 3 && !this.parameters[symbol].isBanned) {
+          this.parameters[symbol].isBanned = true;
+          // 企業名を取得してログ出力
+          let companyName = symbol;
+          if (typeof process !== 'undefined') {
+            try {
+              const module = await import('./symbols.js');
+              companyName = module.JAPAN_PRIME_SYMBOLS_MAP[symbol]?.name || symbol;
+            } catch (e) {}
+          }
+          await this.addLog(`⛔ 【ブラックリスト登録】${companyName} は3連続で損切りとなったため、相性が極悪と判断し今後の取引を永久凍結します。`);
+        }
+
         await this.analyzeMistake(symbol, price);
+      } 
+      // 利確できた場合は連敗カウントをリセット
+      else if (reason === 'TAKE_PROFIT') {
+        if (!this.parameters[symbol]) this.parameters[symbol] = {};
+        this.parameters[symbol].consecutiveLosses = 0;
       }
 
       if (this.portfolio[symbol].shares === 0) {
@@ -408,6 +451,11 @@ export class BotEngine {
 
   async checkAndTrade(symbol) {
     if (!this.isReady) return null;
+
+    // ブラックリスト（3連敗等で凍結）の銘柄は即座にスキップ
+    if (this.parameters[symbol]?.isBanned) {
+      return { action: 'HOLD', reason: 'BANNED' };
+    }
 
     // 5分足データで直近60日分（デイトレ用）を取得
     const data = await fetchStockData(symbol, '60d', '5m');
