@@ -5,7 +5,6 @@ import './index.css';
 
 function App() {
   const [status, setStatus] = useState(null);
-  const [performanceData, setPerformanceData] = useState([]);
 
   const fetchStatus = async () => {
     try {
@@ -13,16 +12,6 @@ function App() {
       if (res.ok) {
         const data = await res.json();
         setStatus(data);
-        
-        setPerformanceData(prev => {
-          // 簡易的に最新の資産額をチャートデータに追加
-          const lastValue = prev.length > 0 ? prev[prev.length - 1].value : 0;
-          if (lastValue !== data.totalAssets) {
-            const newData = [...prev, { time: new Date().toLocaleTimeString(), value: data.totalAssets }];
-            return newData.slice(-20);
-          }
-          return prev;
-        });
       }
     } catch (err) {
       console.error("Failed to fetch status", err);
@@ -100,7 +89,7 @@ function App() {
           <h2><Activity size={20} /> 資産推移</h2>
           <div style={{ width: '100%', height: '200px' }}>
             <ResponsiveContainer>
-              <LineChart data={performanceData}>
+              <LineChart data={status.assetHistory || []}>
                 <XAxis dataKey="time" stroke="#94a3b8" fontSize={12} />
                 <YAxis domain={['auto', 'auto']} stroke="#94a3b8" fontSize={12} width={80} tickFormatter={(val) => `¥${val.toLocaleString()}`} />
                 <Tooltip 

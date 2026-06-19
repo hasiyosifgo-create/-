@@ -67,6 +67,11 @@ const runBotCycle = async () => {
       console.error(`Error checking ${symbol}:`, e);
     }
   }
+  
+  // 1サイクル終わるごとに資産スナップショットを記録（内部で10分おきに間引かれる）
+  if (bot.isMarketOpen()) {
+    await bot.recordAssetSnapshot();
+  }
 };
 
 app.get('/api/status', async (req, res) => {
@@ -79,6 +84,7 @@ app.get('/api/status', async (req, res) => {
     portfolio: bot.portfolio,
     history: bot.history,
     logs: bot.logs,
+    assetHistory: bot.assetHistory,
     scanProgress: `${scanIndex} / ${JAPAN_PRIME_SYMBOLS.length}`,
     dbError: bot.dbError,
     learningReport: bot.learningReport,

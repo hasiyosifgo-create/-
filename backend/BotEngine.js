@@ -12,14 +12,15 @@ export class BotEngine {
     this.history = [];
     this.parameters = {}; 
     this.logs = [];
+    this.assetHistory = [];
     this.learningReport = '';
     this.lastReviewDate = '';
     this.dbState = null;
     this.isReady = false;
     this.isMarketPanicking = false;
     this.dbError = false; 
-    this.macroSentiment = 0; // マクロ経済ニュースの感情スコア
-    this.latestTrends = {}; // 各銘柄の直近のトレンド状態（1: 上昇, -1: 下落）
+    this.macroSentiment = 0; 
+    this.latestTrends = {}; 
   }
 
   // 日本市場が開いている時間か判定する（平日 9:00〜11:30, 12:30〜15:00 JST）
@@ -110,6 +111,7 @@ export class BotEngine {
       this.history = state.history || [];
       this.parameters = state.parameters || {};
       this.logs = state.logs || [];
+      this.assetHistory = state.assetHistory || [];
       this.learningReport = state.learningReport || '';
       this.lastReviewDate = state.lastReviewDate || '';
       this.isReady = true;
@@ -132,10 +134,12 @@ export class BotEngine {
     this.dbState.logs = this.logs.slice(0, 100);
     this.dbState.learningReport = this.learningReport;
     this.dbState.lastReviewDate = this.lastReviewDate;
+    this.dbState.assetHistory = this.assetHistory;
     this.dbState.markModified('portfolio');
     this.dbState.markModified('parameters');
     this.dbState.markModified('history');
     this.dbState.markModified('logs');
+    this.dbState.markModified('assetHistory');
     try {
       await this.dbState.save();
     } catch (err) {
@@ -187,6 +191,21 @@ export class BotEngine {
     const nikkeiNewsScore = await this.analyzeSentiment('^N225');
     const usdJpyNewsScore = await this.analyzeSentiment('JPY=X');
     this.macroSentiment = nikkeiNewsScore + usdJpyNewsScore;
+  }
+
+  async recordAssetSnapshot() {
+    const totalAssets = await this.getTotalAssets();
+    const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
+    
+    // 10分単位で切り捨てて記録（例: 09:00, 09:10, 09:20）
+    const roundedMinutes = Math.floor(now.getMinutes() / 10) * 10;
+    const timeKey = `${now.getHours().toString().padStart(2, '0')}:${roundedMinutes.toString().padStart(2, '0')}`;
+
+    if (this.assetHistory.length === 0 || this.assetHistory[this.assetHistory.length - 1].time !== timeKey) {
+      this.assetHistory.push({ time: timeKey, value: totalAssets });
+      if (this.assetHistory.length > 50) this.assetHistory.shift(); // 最大50件（約1日分）を保持
+      await this.saveData();
+    }
   }
 
   async buy(symbol, shares, price, currentState) {
