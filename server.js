@@ -69,7 +69,8 @@ const runBotCycle = async () => {
   }
   
   // 1サイクル終わるごとに資産スナップショットを記録（内部で10分おきに間引かれる）
-  if (bot.isMarketOpen()) {
+  // ※古いデータを削除してグラフが消えてしまった時のために、履歴が0件の場合は市場が閉まっていても1回記録する
+  if (bot.isMarketOpen() || bot.assetHistory.length === 0) {
     await bot.recordAssetSnapshot();
   }
 };
