@@ -96,7 +96,7 @@ function App() {
                   contentStyle={{ backgroundColor: 'rgba(30, 41, 59, 0.9)', border: 'none', borderRadius: '8px' }}
                   itemStyle={{ color: '#f8fafc' }}
                 />
-                <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={false} />
+                <Line type="monotone" dataKey="value" stroke="#3b82f6" strokeWidth={3} dot={status.assetHistory?.length <= 1} />
               </LineChart>
             </ResponsiveContainer>
           </div>

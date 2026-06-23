@@ -34,6 +34,11 @@ const runBotCycle = async () => {
   }
 
   if (!bot.isMarketOpen()) {
+    // 履歴が空になってしまった場合は、早期リターンの前に1件だけ強制的に記録する
+    if (bot.assetHistory.length === 0) {
+      await bot.recordAssetSnapshot();
+    }
+
     // 市場が閉まっている時間は数時間に1回ログを出す程度にしてスキップする
     if (Math.random() < 0.05) {
       await bot.addLog('🌙 現在は日本市場の営業時間外（夜間・休日または昼休み）です。待機中...');
@@ -69,8 +74,7 @@ const runBotCycle = async () => {
   }
   
   // 1サイクル終わるごとに資産スナップショットを記録（内部で10分おきに間引かれる）
-  // ※古いデータを削除してグラフが消えてしまった時のために、履歴が0件の場合は市場が閉まっていても1回記録する
-  if (bot.isMarketOpen() || bot.assetHistory.length === 0) {
+  if (bot.isMarketOpen()) {
     await bot.recordAssetSnapshot();
   }
 };

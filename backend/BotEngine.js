@@ -174,6 +174,13 @@ export class BotEngine {
   }
 
   async addLog(message) {
+    if (this.logs.length > 0) {
+      // 時間のプレフィックスを取り除いたメッセージ本体を取得して比較
+      const lastMessage = this.logs[0].replace(/^\[.*?\]\s*/, '');
+      if (lastMessage === message) {
+        return; // 連続する同じメッセージ（待機中など）は無視してログをまとめます
+      }
+    }
     const log = `[${new Date().toLocaleTimeString()}] ${message}`;
     this.logs.unshift(log);
     if (this.logs.length > 100) this.logs.pop();
