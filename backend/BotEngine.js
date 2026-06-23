@@ -134,6 +134,10 @@ export class BotEngine {
       this.parameters = state.parameters || {};
       this.logs = state.logs || [];
       this.assetHistory = state.assetHistory || [];
+      
+      // 過去の日付が含まれていない古いフォーマットのデータ（"09:10"など）を除去し、X軸の重複によるチャートの表示ズレ・バグを防ぐ
+      this.assetHistory = this.assetHistory.filter(item => item.time && item.time.includes('/'));
+
       this.learningReport = state.learningReport || '';
       this.lastReviewDate = state.lastReviewDate || '';
       this.isReady = true;
