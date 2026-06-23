@@ -219,9 +219,9 @@ export class BotEngine {
     const totalAssets = await this.getTotalAssets();
     const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
     
-    // 10分単位で切り捨てて記録（例: 09:00, 09:10, 09:20）
+    // 日付と時間を10分単位で切り捨てて記録（例: 6/23 09:00, 09:10）
     const roundedMinutes = Math.floor(now.getMinutes() / 10) * 10;
-    const timeKey = `${now.getHours().toString().padStart(2, '0')}:${roundedMinutes.toString().padStart(2, '0')}`;
+    const timeKey = `${now.getMonth() + 1}/${now.getDate()} ${now.getHours().toString().padStart(2, '0')}:${roundedMinutes.toString().padStart(2, '0')}`;
 
     if (this.assetHistory.length === 0 || this.assetHistory[this.assetHistory.length - 1].time !== timeKey) {
       this.assetHistory.push({ time: timeKey, value: totalAssets });
@@ -253,11 +253,18 @@ export class BotEngine {
 
   async sell(symbol, shares, price, reason = 'SELL') {
     if (this.portfolio[symbol] && this.portfolio[symbol].shares >= shares) {
-      const revenue = shares * price;
-      this.balance += revenue;
-      
       const avgPrice = this.portfolio[symbol].averagePrice;
-      const profitLoss = (price - avgPrice) * shares; // 売却時の損益を計算
+      const grossProfitLoss = (price - avgPrice) * shares; 
+      
+      // 利益が出た場合のみ、日本の株式譲渡益課税（約20.315%）を計算
+      let tax = 0;
+      if (grossProfitLoss > 0) {
+        tax = Math.floor(grossProfitLoss * 0.20315);
+      }
+
+      const netProfitLoss = grossProfitLoss - tax;
+      const revenue = (shares * price) - tax; // 税引き後の実際の受取金額
+      this.balance += revenue;
 
       this.portfolio[symbol].shares -= shares;
 
@@ -291,7 +298,7 @@ export class BotEngine {
         delete this.portfolio[symbol];
       }
 
-      this.recordHistory(reason, symbol, shares, price, profitLoss);
+      this.recordHistory(reason, symbol, shares, price, netProfitLoss, tax);
       await this.saveData();
       return true;
     }
@@ -338,7 +345,7 @@ export class BotEngine {
     await this.addLog(analysisMsg);
   }
 
-  recordHistory(type, symbol, shares, price, profitLoss = 0) {
+  recordHistory(type, symbol, shares, price, profitLoss = 0, tax = 0) {
     this.history.unshift({
       id: Date.now().toString() + Math.random().toString(),
       date: new Date().toISOString(),
@@ -347,7 +354,8 @@ export class BotEngine {
       shares,
       price,
       total: shares * price,
-      profitLoss: profitLoss
+      profitLoss: profitLoss,
+      tax: tax
     });
   }
 
@@ -555,8 +563,12 @@ export class BotEngine {
     else if (isDeadCross || isMacdBearish || sentimentScore <= -3) {
       if (this.portfolio[symbol] && this.portfolio[symbol].shares > 0) {
         const sharesToSell = this.portfolio[symbol].shares;
-        if (await this.sell(symbol, sharesToSell, currentPrice)) {
-          action = 'SELL';
+        const avgPrice = this.portfolio[symbol].averagePrice;
+        // デッドクロス等での売却時も、購入単価より下回っていれば「損切り（STOP_LOSS）」として学習させる
+        const reason = currentPrice > avgPrice ? 'TAKE_PROFIT' : 'STOP_LOSS';
+        
+        if (await this.sell(symbol, sharesToSell, currentPrice, reason)) {
+          action = `SELL_${reason}`;
         }
       }
     }

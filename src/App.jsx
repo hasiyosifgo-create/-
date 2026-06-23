@@ -171,7 +171,7 @@ function App() {
                   <th>株数</th>
                   <th>単価</th>
                   <th>総額</th>
-                  <th>確定損益</th>
+                  <th>確定損益 (税引後)</th>
                 </tr>
               </thead>
               <tbody>
@@ -190,10 +190,14 @@ function App() {
                       <td>{item.shares}</td>
                       <td>¥{item.price.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
                       <td>¥{item.total.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
-                      <td style={{ fontWeight: 600, color: item.profitLoss > 0 ? '#10b981' : (item.profitLoss < 0 ? '#ef4444' : 'inherit') }}>
+                      <td 
+                        style={{ fontWeight: 600, color: item.profitLoss > 0 ? '#10b981' : (item.profitLoss < 0 ? '#ef4444' : 'inherit') }}
+                        title={item.tax > 0 ? `源泉徴収税: -¥${item.tax.toLocaleString()}` : ''}
+                      >
                         {item.type !== 'BUY' && item.profitLoss !== undefined ? (
                           <>
                             {item.profitLoss > 0 ? '+' : ''}¥{item.profitLoss.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                            {item.tax > 0 && <span style={{fontSize:'0.7rem', color:'#94a3b8', display:'block'}}>税: -¥{item.tax.toLocaleString()}</span>}
                           </>
                         ) : '-'}
                       </td>
