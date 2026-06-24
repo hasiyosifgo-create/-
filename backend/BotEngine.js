@@ -61,45 +61,52 @@ export class BotEngine {
     }
 
     let overallReport = `\n【AI 学習総括（累積）】\n`;
-    let strictRsiCount = 0;
-    let strictSentimentCount = 0;
-    let strictMacdCount = 0;
-    let strictSectorCount = 0;
-    let strictMacroCount = 0;
-
-    for (const sym in this.parameters) {
-      if (this.parameters[sym].maxRsi < 70) strictRsiCount++;
-      if (this.parameters[sym].minSentiment > -2) strictSentimentCount++;
-      if (this.parameters[sym].macdStrict) strictMacdCount++;
-      if (this.parameters[sym].sectorStrict) strictSectorCount++;
-      if (this.parameters[sym].macroStrict) strictMacroCount++;
-    }
-
-    overallReport += `・高値掴みを警戒し、RSI上限を厳しくした銘柄: ${strictRsiCount} 社\n`;
-    overallReport += `・ニュースの悪影響を警戒し、要求感情スコアを上げた銘柄: ${strictSentimentCount} 社\n`;
-    overallReport += `・MACDのだましを警戒し、条件を厳格化した銘柄: ${strictMacdCount} 社\n`;
-    overallReport += `・同業他社の下落（セクター不況）への巻き込まれを警戒している銘柄: ${strictSectorCount} 社\n`;
-    overallReport += `・政治・為替などマクロ経済悪化の影響を受けやすいと判断した銘柄: ${strictMacroCount} 社\n`;
-    overallReport += `AIは個別のチャートだけでなく、政治・業界全体の動向も踏まえて防御力を高めています。\n`;
-
-    // ブラックリスト出力
-    let bannedCount = 0;
+    
+    let strictRsiNames = [];
+    let strictSentimentNames = [];
+    let strictMacdNames = [];
+    let strictSectorNames = [];
+    let strictMacroNames = [];
     let bannedNames = [];
+
+    // モジュールからシンボルマップを読み込む
+    let symbolsMap = {};
     if (typeof process !== 'undefined') {
       try {
         const module = await import('./symbols.js');
-        const JAPAN_PRIME_SYMBOLS_MAP = module.JAPAN_PRIME_SYMBOLS_MAP;
-        for (const sym in this.parameters) {
-          if (this.parameters[sym].isBanned) {
-            bannedCount++;
-            bannedNames.push(JAPAN_PRIME_SYMBOLS_MAP[sym]?.name || sym);
-          }
-        }
+        symbolsMap = module.JAPAN_PRIME_SYMBOLS_MAP;
       } catch (e) {}
     }
 
-    if (bannedCount > 0) {
-      overallReport += `\n⛔ 【ブラックリスト（永久凍結）】: ${bannedCount} 社\n`;
+    for (const sym in this.parameters) {
+      const name = symbolsMap[sym]?.name || sym;
+      if (this.parameters[sym].maxRsi < 70) strictRsiNames.push(name);
+      if (this.parameters[sym].minSentiment > -2) strictSentimentNames.push(name);
+      if (this.parameters[sym].macdStrict) strictMacdNames.push(name);
+      if (this.parameters[sym].sectorStrict) strictSectorNames.push(name);
+      if (this.parameters[sym].macroStrict) strictMacroNames.push(name);
+      if (this.parameters[sym].isBanned) bannedNames.push(name);
+    }
+
+    overallReport += `・高値掴みを警戒し、RSI上限を厳しくした銘柄: ${strictRsiNames.length} 社\n`;
+    if (strictRsiNames.length > 0) overallReport += `   (${strictRsiNames.join(', ')})\n`;
+    
+    overallReport += `・ニュースの悪影響を警戒し、要求感情スコアを上げた銘柄: ${strictSentimentNames.length} 社\n`;
+    if (strictSentimentNames.length > 0) overallReport += `   (${strictSentimentNames.join(', ')})\n`;
+    
+    overallReport += `・MACDのだましを警戒し、条件を厳格化した銘柄: ${strictMacdNames.length} 社\n`;
+    if (strictMacdNames.length > 0) overallReport += `   (${strictMacdNames.join(', ')})\n`;
+    
+    overallReport += `・同業他社の下落（セクター不況）への巻き込まれを警戒している銘柄: ${strictSectorNames.length} 社\n`;
+    if (strictSectorNames.length > 0) overallReport += `   (${strictSectorNames.join(', ')})\n`;
+    
+    overallReport += `・政治・為替などマクロ経済悪化の影響を受けやすいと判断した銘柄: ${strictMacroNames.length} 社\n`;
+    if (strictMacroNames.length > 0) overallReport += `   (${strictMacroNames.join(', ')})\n`;
+    
+    overallReport += `AIは個別のチャートだけでなく、政治・業界全体の動向も踏まえて防御力を高めています。\n`;
+
+    if (bannedNames.length > 0) {
+      overallReport += `\n⛔ 【ブラックリスト（永久凍結）】: ${bannedNames.length} 社\n`;
       overallReport += `   対象: ${bannedNames.join(', ')}\n`;
       overallReport += `   ※3連続の損切りを記録したため、システムとの相性が極悪と判断し以後の取引を停止しています。\n`;
     }
