@@ -563,10 +563,32 @@ export class BotEngine {
         const affordableShares = Math.floor(this.balance / currentPrice / 100) * 100;
         const sharesToBuy = Math.min(targetShares, affordableShares);
 
+        // ボラティリティ（直近50キャンドルの値幅の割合）を計算
+        let maxP = -Infinity, minP = Infinity;
+        for (let k = Math.max(0, data.length - 50); k < data.length; k++) {
+          if (data[k].high > maxP) maxP = data[k].high;
+          if (data[k].low < minP) minP = data[k].low;
+        }
+        const volatility = (maxP - minP) / minP;
+
         // 買った瞬間の全情報（セクタートレンド、マクロ感情含む）を保存
         const currentState = { rsi: currRsi, macd: currMacd, sentimentScore, price: currentPrice, sectorTrend: sectorTrendScore, macroSentiment: this.macroSentiment };
-        if (sharesToBuy >= 100 && await this.buy(symbol, sharesToBuy, currentPrice, currentState)) {
-          action = 'BUY';
+        
+        if (sharesToBuy >= 100) {
+          action = 'INTENT_TO_BUY';
+          return {
+            symbol,
+            action,
+            currentPrice,
+            sharesToBuy,
+            currentState,
+            volatility,
+            shortSma: currShort,
+            longSma: currLong,
+            macd: currMacd,
+            rsi: currRsi,
+            sentimentScore
+          };
         }
       }
     } 

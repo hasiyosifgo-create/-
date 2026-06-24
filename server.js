@@ -60,16 +60,50 @@ const runBotCycle = async () => {
   await bot.addLog(`🔍 スキャン中... (${symbolsToCheck.join(', ')})`);
   let traded = false;
   
+  const buyIntents = [];
+
   for (const symbol of symbolsToCheck) {
     try {
       const result = await bot.checkAndTrade(symbol);
-      if (result && result.action !== 'HOLD') {
-        const companyName = JAPAN_PRIME_SYMBOLS_MAP[symbol]?.name || symbol;
-        await bot.addLog(`[${companyName}] ${result.action} 成立! (価格: ¥${result.currentPrice.toLocaleString()})`);
-        traded = true;
+      if (result) {
+        if (result.action === 'INTENT_TO_BUY') {
+          buyIntents.push(result);
+        } else if (result.action !== 'HOLD') {
+          // 売却成立の場合のログ
+          const companyName = JAPAN_PRIME_SYMBOLS_MAP[symbol]?.name || symbol;
+          await bot.addLog(`[${companyName}] ${result.action.replace('_', ' ')} 成立! (価格: ¥${result.currentPrice.toLocaleString()})`);
+          traded = true;
+        }
       }
     } catch (e) {
       console.error(`Error checking ${symbol}:`, e);
+    }
+  }
+
+  // ここから「品評会（ランキング＆優先購入）」システム
+  if (buyIntents.length > 0) {
+    // ボラティリティ（値幅）が大きい順にソート（最も利益が狙える銘柄を1位にする）
+    buyIntents.sort((a, b) => b.volatility - a.volatility);
+
+    for (const intent of buyIntents) {
+      const companyName = JAPAN_PRIME_SYMBOLS_MAP[intent.symbol]?.name || intent.symbol;
+
+      // 足切りルール（直近の値幅が1%未満の鈍足銘柄は、利益が薄いため買わない）
+      if (intent.volatility < 0.01) {
+        await bot.addLog(`⏭️ [${companyName}] 買い条件を満たしましたが、値動きが弱すぎる(${(intent.volatility * 100).toFixed(2)}%)ため見送りました。`);
+        continue;
+      }
+
+      // 1位の銘柄を購入実行
+      const success = await bot.buy(intent.symbol, intent.sharesToBuy, intent.currentPrice, intent.currentState);
+      if (success) {
+        await bot.addLog(`⭐ [${companyName}] 優先購入実行! (ボラティリティ: ${(intent.volatility * 100).toFixed(2)}%, 価格: ¥${intent.currentPrice.toLocaleString()})`);
+        traded = true;
+        break; // 1サイクルにつき一番期待値の高い1銘柄だけ買って終了する
+      } else {
+        // 資金不足等で買えなかった場合（通常はここでbreakするがログだけ残す）
+        await bot.addLog(`⚠️ [${companyName}] 資金不足で優先購入をスキップしました。`);
+      }
     }
   }
   
