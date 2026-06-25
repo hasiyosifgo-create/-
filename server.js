@@ -16,7 +16,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const bot = new BotEngine(500000);
+const bot = new BotEngine(10000000); // 初期資金を1000万円に増額（大型株も買えるように）
 // 初期状態を「稼働中」に変更（スリープから復帰しても自動で再開する）
 let isRunning = true;
 let botInterval = null;
@@ -88,8 +88,8 @@ const runBotCycle = async () => {
     for (const intent of buyIntents) {
       const companyName = JAPAN_PRIME_SYMBOLS_MAP[intent.symbol]?.name || intent.symbol;
 
-      // 足切りルール（直近の値幅が1%未満の鈍足銘柄は、利益が薄いため買わない）
-      if (intent.volatility < 0.01) {
+      // 足切りルール（直近の値幅が0.5%未満の鈍足銘柄は、利益が薄いため買わない）
+      if (intent.volatility < 0.005) {
         await bot.addLog(`⏭️ [${companyName}] 買い条件を満たしましたが、値動きが弱すぎる(${(intent.volatility * 100).toFixed(2)}%)ため見送りました。`);
         continue;
       }

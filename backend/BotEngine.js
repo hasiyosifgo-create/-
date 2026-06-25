@@ -119,10 +119,11 @@ export class BotEngine {
 
   async initialize() {
     try {
-      let state = await BotState.findOne({ id: 'bot_state' });
+      // 古い恐怖心（ブラックリスト等）をリセットし、資金1000万で再スタートするため v2 のドキュメントを使用
+      let state = await BotState.findOne({ id: 'bot_state_v2' });
       if (!state) {
         state = new BotState({
-          id: 'bot_state',
+          id: 'bot_state_v2',
           balance: this.initialBalance,
           initialBalance: this.initialBalance,
           portfolio: {},
