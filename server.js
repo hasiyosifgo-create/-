@@ -22,7 +22,7 @@ let isRunning = true;
 let botInterval = null;
 
 let scanIndex = 0;
-const BATCH_SIZE = 5; 
+const BATCH_SIZE = 10; // 1回あたりのスキャン数を増やす
 
 const runBotCycle = async () => {
   const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
@@ -140,7 +140,7 @@ app.post('/api/toggle', async (req, res) => {
     isRunning = true;
     await bot.addLog('BOTを起動しました。デイトレスキャンを開始します...');
     runBotCycle(); 
-    botInterval = setInterval(runBotCycle, 20000);
+    botInterval = setInterval(runBotCycle, 10000); // 10秒間隔に短縮
   }
   res.json({ isRunning });
 });
@@ -160,7 +160,7 @@ app.listen(PORT, async () => {
   
   // 自動起動
   runBotCycle();
-  botInterval = setInterval(runBotCycle, 20000);
+  botInterval = setInterval(runBotCycle, 10000); // 10秒間隔に短縮
 
   // Renderのスリープ防止用（10分ごとに自分自身にアクセスする）
   setInterval(() => {
