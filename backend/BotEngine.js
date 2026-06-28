@@ -115,6 +115,10 @@ export class BotEngine {
     this.learningReport = dailyReport + overallReport;
     this.lastReviewDate = dateStr;
     await this.addLog('🧠 本日の取引精査と学習レポートの作成が完了しました。');
+    
+    // 日次レビューの一環として、自動的にバックテスト（過去相場の復習とパラメータ最適化）を行う
+    await this.runBacktest();
+    
     await this.saveData();
   }
 
