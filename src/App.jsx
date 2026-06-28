@@ -35,6 +35,17 @@ function App() {
     }
   };
 
+  const runBacktest = async () => {
+    try {
+      // API呼び出しでバックテスト（タイムトラベル学習）をキックする
+      await fetch('/api/backtest', { method: 'POST' });
+      // ログに反映されるので数秒待ってステータス更新
+      setTimeout(fetchStatus, 2000);
+    } catch (err) {
+      console.error("Failed to start backtest", err);
+    }
+  };
+
   if (!status) return <div className="app-container"><div className="loader"></div> サーバーに接続中...</div>;
 
   const profit = status.totalAssets - status.initialBalance;
@@ -82,6 +93,13 @@ function App() {
             onClick={toggleBot}
           >
             {status.isRunning ? <><Pause size={18} /> 自動取引を停止</> : <><Play size={18} /> 自動取引を開始</>}
+          </button>
+          <button 
+            className="btn" 
+            style={{ marginTop: '0.75rem', width: '100%', justifyContent: 'center', backgroundColor: '#8b5cf6', color: 'white' }}
+            onClick={runBacktest}
+          >
+            <History size={18} /> 過去データでバックテスト実行
           </button>
         </div>
 
