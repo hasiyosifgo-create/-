@@ -33,6 +33,31 @@ export const fetchStockData = async (symbol, range = '1y', interval = '1d') => {
   }
 };
 
+export const calculateVWAP = (data) => {
+  if (!data || data.length === 0) return null;
+  
+  // 直近の日付（今日）のデータだけで計算する
+  const lastItem = data[data.length - 1];
+  const lastDate = new Date(lastItem.time).toDateString();
+  
+  let cumulativePV = 0;
+  let cumulativeV = 0;
+  
+  for (let i = 0; i < data.length; i++) {
+    const item = data[i];
+    const itemDate = new Date(item.time).toDateString();
+    // 今日のデータに絞る
+    if (itemDate === lastDate) {
+      const typicalPrice = (item.high + item.low + item.close) / 3;
+      cumulativePV += typicalPrice * item.volume;
+      cumulativeV += item.volume;
+    }
+  }
+  
+  if (cumulativeV === 0) return null;
+  return cumulativePV / cumulativeV;
+};
+
 export const fetchCurrentPrice = async (symbol) => {
   try {
     const data = await fetchStockData(symbol, '5d', '1d');

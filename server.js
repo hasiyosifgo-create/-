@@ -145,6 +145,11 @@ app.post('/api/toggle', async (req, res) => {
   res.json({ isRunning });
 });
 
+app.post('/api/backtest', async (req, res) => {
+  res.json({ success: true, message: "バックテストを開始しました" });
+  await bot.runBacktest();
+});
+
 app.use(express.static(path.join(__dirname, 'dist')));
 
 app.use((req, res) => {

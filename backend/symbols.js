@@ -61,3 +61,16 @@ export const JAPAN_PRIME_SYMBOLS_MAP = {
 };
 
 export const JAPAN_PRIME_SYMBOLS = Object.keys(JAPAN_PRIME_SYMBOLS_MAP);
+
+export const SECTOR_ETF_MAP = {
+  '自動車関連': '1622.T', // 輸送用機器
+  '半導体・電子部品': '1612.T', // 電気機器
+  '金融・銀行': '1615.T', // 銀行業
+  '情報・通信': '1613.T', // 情報通信業
+  '総合商社': '1611.T', // 卸売業
+  '医薬品・化学': '1618.T', // 医薬品
+  '小売・サービス': '1614.T', // 小売業
+  '電機・精密': '1612.T', // 電気機器
+  '機械・インフラ': '1624.T', // 機械
+  '不動産・運輸': '1633.T' // 不動産業
+};

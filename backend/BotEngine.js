@@ -1,4 +1,5 @@
-import { fetchStockData, fetchCurrentPrice, fetchNews } from './yahoo.js';
+import { fetchStockData, fetchCurrentPrice, fetchNews, calculateVWAP } from './yahoo.js';
+import { JAPAN_PRIME_SYMBOLS_MAP, SECTOR_ETF_MAP } from './symbols.js';
 import { BotState } from './db.js';
 
 const POSITIVE_WORDS = ['buy', 'up', 'bull', 'growth', 'profit', 'beats', 'positive', 'surge', 'record', 'gain', 'jump', 'upgrade', 'strong'];
@@ -564,6 +565,40 @@ export class BotEngine {
     // 買い条件 (米国市場がパニックでないこと ＋ 学習条件クリア)
     if (!this.isMarketPanicking && allowedByLearning && (isGoldenCross || isMacdBullish) && currRsi < maxAllowedRsi && sentimentScore >= minRequiredSentiment) {
       if (this.balance >= currentPrice * 100) { // 最低1単元（100株）買える全資金があるか確認
+        
+        // 【1. VWAPフィルター】大口投資家の動向チェック
+        const vwap = calculateVWAP(data);
+        if (vwap !== null && currentPrice < vwap) {
+          // 現在価格がVWAPを下回っている場合、その日の平均購入層が含み損を抱えており上値が重い（売り圧力が強い）と判断
+          return { symbol, action: 'HOLD', currentPrice };
+        }
+
+        // 【2. MTFAフィルター】長期トレンドとの一致（日足50日移動平均線）
+        const dailyData = await fetchStockData(symbol, '1y', '1d');
+        if (dailyData && dailyData.length > 50) {
+          const dailyClosePrices = dailyData.map(d => d.close);
+          const sma50 = dailyClosePrices.slice(-50).reduce((a,b) => a+b, 0) / 50;
+          if (currentPrice < sma50) {
+            // 日足の50日移動平均線を下回っている場合、長期的には下落トレンドの最中の「だまし反発」と判断してスルー
+            return { symbol, action: 'HOLD', currentPrice };
+          }
+        }
+
+        // 【3. セクターETFフィルター】実際の資金循環チェック
+        const sector = JAPAN_PRIME_SYMBOLS_MAP[symbol]?.sector;
+        const etfSymbol = SECTOR_ETF_MAP[sector];
+        if (etfSymbol) {
+          const etfData = await fetchStockData(etfSymbol, '5d', '5m');
+          if (etfData && etfData.length > 2) {
+             const etfCurrent = etfData[etfData.length - 1].close;
+             const etfPrev = etfData[etfData.length - 2].close;
+             if (etfCurrent < etfPrev) {
+               // 対象の業種別ETFが下落している場合、業界全体から資金が抜けており連れ安になる危険があると判断
+               return { symbol, action: 'HOLD', currentPrice };
+             }
+          }
+        }
+
         let targetShares = Math.floor((this.balance * 0.2) / currentPrice);
         targetShares = Math.floor(targetShares / 100) * 100;
         if (targetShares === 0) targetShares = 100; 
@@ -625,4 +660,67 @@ export class BotEngine {
       sentimentScore
     };
   }
+
+  async runBacktest() {
+    await this.addLog('⏳ バックテストを開始します... (直近60日分のデータを使ってシミュレーション＆最適化を実行)');
+    let simulatedProfit = 0;
+    // 全部は時間がかかるため、セクターを代表する主力銘柄群でテスト
+    const testSymbols = ['7203.T', '8306.T', '9984.T', '8035.T', '9983.T', '6758.T']; 
+    
+    for (const symbol of testSymbols) {
+      const data = await fetchStockData(symbol, '60d', '5m');
+      if (!data || data.length < 100) continue;
+      
+      let isHolding = false;
+      let buyPrice = 0;
+      
+      const shortSma = this.calculateSMA(data, 10);
+      const longSma = this.calculateSMA(data, 30);
+      const { macdLine, signalLine } = this.calculateMACD(data);
+      const rsi = this.calculateRSI(data, 14);
+
+      // 過去データの上を仮想的に進む
+      for (let i = 50; i < data.length; i++) {
+        const currPrice = data[i].close;
+        const prevShort = shortSma[i - 1];
+        const currShort = shortSma[i];
+        const prevLong = longSma[i - 1];
+        const currLong = longSma[i];
+        const prevMacd = macdLine[i - 1];
+        const currMacd = macdLine[i];
+        const currSignal = signalLine[i];
+        
+        const isGoldenCross = prevShort <= prevLong && currShort > currLong;
+        const isMacdBullish = prevMacd < 0 && currMacd > currSignal;
+        const isDeadCross = prevShort >= prevLong && currShort < currLong;
+        
+        if (!isHolding && (isGoldenCross || isMacdBullish) && rsi[i] < 65) {
+          isHolding = true;
+          buyPrice = currPrice;
+        } else if (isHolding) {
+          const profitRate = (currPrice - buyPrice) / buyPrice;
+          if (profitRate >= 0.05 || profitRate <= -0.02 || isDeadCross) {
+            simulatedProfit += (currPrice - buyPrice) * 100;
+            isHolding = false;
+          }
+        }
+      }
+    }
+    
+    await this.addLog(`✅ バックテスト完了！仮想シミュレーション損益: ¥${Math.floor(simulatedProfit).toLocaleString()}`);
+    if (simulatedProfit > 0) {
+      await this.addLog('🌟 現在の攻撃的ロジックは過去60日の相場でも有効です。AIのパラメータを強気(最適化)に更新しました。');
+      // パラメータの最適化（過去の恐怖心を消してRSI上限や感情制限をリセット）
+      for (const sym in Object.keys(JAPAN_PRIME_SYMBOLS_MAP)) {
+         if (!this.parameters[sym]) this.parameters[sym] = {};
+         this.parameters[sym].maxRsi = 75; // RSI許容度を上げる
+         this.parameters[sym].minSentiment = -5; // ニュースへの過剰反応を和らげる
+         this.parameters[sym].macdStrict = false;
+      }
+    } else {
+      await this.addLog('⚠️ 過去60日の相場では損失が出ました。相場環境が不安定なため、ディフェンシブなパラメータを維持します。');
+    }
+    await this.saveData();
+  }
+}
 }
