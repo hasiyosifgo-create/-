@@ -723,4 +723,3 @@ export class BotEngine {
     await this.saveData();
   }
 }
-}
