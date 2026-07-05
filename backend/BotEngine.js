@@ -1,4 +1,4 @@
-import { fetchStockData, fetchCurrentPrice, fetchNews, calculateVWAP } from './yahoo.js';
+import { fetchStockData, fetchCurrentPrice, fetchNews, calculateVWAP, fetchFundamentals } from './yahoo.js';
 import { JAPAN_PRIME_SYMBOLS_MAP, SECTOR_ETF_MAP } from './symbols.js';
 import { BotState } from './db.js';
 
@@ -124,11 +124,11 @@ export class BotEngine {
 
   async initialize() {
     try {
-      // 古い恐怖心（ブラックリスト等）をリセットし、資金1000万で再スタートするため v2 のドキュメントを使用
-      let state = await BotState.findOne({ id: 'bot_state_v2' });
+      // ファンダメンタルズ分析の実装に合わせて、ブラックリスト等の過去の記憶を完全にリセット（v3）
+      let state = await BotState.findOne({ id: 'bot_state_v3' });
       if (!state) {
         state = new BotState({
-          id: 'bot_state_v2',
+          id: 'bot_state_v3',
           balance: this.initialBalance,
           initialBalance: this.initialBalance,
           portfolio: {},
@@ -603,6 +603,27 @@ export class BotEngine {
           }
         }
 
+        // 【4. ファンダメンタルズ（企業価値）フィルター】
+        const fundamentals = await fetchFundamentals(symbol);
+        if (fundamentals) {
+          // PERが30倍以上なら割高としてスルー（成長株は高くなりがちだが安全を優先）
+          if (fundamentals.trailingPE > 30) {
+            return { symbol, action: 'HOLD', currentPrice };
+          }
+          // PBRが5倍以上なら資産価値に対して割高
+          if (fundamentals.priceToBook > 5) {
+            return { symbol, action: 'HOLD', currentPrice };
+          }
+          // ROEが8%未満の非効率な経営をしている企業はスルー
+          if (fundamentals.returnOnEquity !== 0 && fundamentals.returnOnEquity < 0.08) {
+            return { symbol, action: 'HOLD', currentPrice };
+          }
+          // 倒産リスクチェック：流動比率（1年以内に現金化できる資産 ÷ 1年以内に返す負債）が1未満なら危険
+          if (fundamentals.currentRatio !== 0 && fundamentals.currentRatio < 1.0) {
+            return { symbol, action: 'HOLD', currentPrice };
+          }
+        }
+
         let targetShares = Math.floor((this.balance * 0.2) / currentPrice);
         targetShares = Math.floor(targetShares / 100) * 100;
         if (targetShares === 0) targetShares = 100; 
@@ -715,11 +736,12 @@ export class BotEngine {
     if (simulatedProfit > 0) {
       await this.addLog('🌟 現在の攻撃的ロジックは過去60日の相場でも有効です。AIのパラメータを強気(最適化)に更新しました。');
       // パラメータの最適化（過去の恐怖心を消してRSI上限や感情制限をリセット）
-      for (const sym in Object.keys(JAPAN_PRIME_SYMBOLS_MAP)) {
+      for (const sym of Object.keys(JAPAN_PRIME_SYMBOLS_MAP)) {
          if (!this.parameters[sym]) this.parameters[sym] = {};
          this.parameters[sym].maxRsi = 75; // RSI許容度を上げる
          this.parameters[sym].minSentiment = -5; // ニュースへの過剰反応を和らげる
          this.parameters[sym].macdStrict = false;
+         this.parameters[sym].isBanned = false; // ブラックリストも強制解除
       }
     } else {
       await this.addLog('⚠️ 過去60日の相場では損失が出ました。相場環境が不安定なため、ディフェンシブなパラメータを維持します。');
