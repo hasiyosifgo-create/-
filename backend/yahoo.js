@@ -1,4 +1,5 @@
 import fs from 'fs';
+import yahooFinance from 'yahoo-finance2';
 
 export const fetchStockData = async (symbol, range = '1y', interval = '1d') => {
   try {
@@ -90,5 +91,44 @@ export const fetchNews = async (symbol) => {
   } catch (error) {
     console.error("Error fetching news:", error);
     return [];
+  }
+};
+
+const fundamentalsCache = {};
+
+export const fetchFundamentals = async (symbol) => {
+  const now = Date.now();
+  // 24時間キャッシュ（無駄なAPIコールを防ぐ）
+  if (fundamentalsCache[symbol] && now - fundamentalsCache[symbol].timestamp < 24 * 60 * 60 * 1000) {
+    return fundamentalsCache[symbol].data;
+  }
+
+  try {
+    const result = await yahooFinance.quoteSummary(symbol, {
+      modules: ['defaultKeyStatistics', 'financialData']
+    });
+    
+    const stats = result.defaultKeyStatistics || {};
+    const fin = result.financialData || {};
+
+    const data = {
+      trailingPE: fin.trailingPE || stats.trailingPE || fin.forwardPE || 0, // PER
+      priceToBook: stats.priceToBook || 0, // PBR
+      returnOnEquity: fin.returnOnEquity || 0, // ROE
+      revenueGrowth: fin.revenueGrowth || 0, // 売上高成長率
+      operatingMargin: fin.operatingMargins || 0, // 営業利益率
+      currentRatio: fin.currentRatio || 0, // 流動比率
+      debtToEquity: fin.debtToEquity || 0, // 負債比率
+      trailingEps: stats.trailingEps || fin.trailingEps || 0 // EPS
+    };
+
+    fundamentalsCache[symbol] = {
+      timestamp: now,
+      data
+    };
+    return data;
+  } catch (error) {
+    console.error(`Error fetching fundamentals for ${symbol}:`, error.message);
+    return null;
   }
 };
