@@ -736,11 +736,12 @@ export class BotEngine {
     if (simulatedProfit > 0) {
       await this.addLog('🌟 現在の攻撃的ロジックは過去60日の相場でも有効です。AIのパラメータを強気(最適化)に更新しました。');
       // パラメータの最適化（過去の恐怖心を消してRSI上限や感情制限をリセット）
-      for (const sym in Object.keys(JAPAN_PRIME_SYMBOLS_MAP)) {
+      for (const sym of Object.keys(JAPAN_PRIME_SYMBOLS_MAP)) {
          if (!this.parameters[sym]) this.parameters[sym] = {};
          this.parameters[sym].maxRsi = 75; // RSI許容度を上げる
          this.parameters[sym].minSentiment = -5; // ニュースへの過剰反応を和らげる
          this.parameters[sym].macdStrict = false;
+         this.parameters[sym].isBanned = false; // ブラックリストも強制解除
       }
     } else {
       await this.addLog('⚠️ 過去60日の相場では損失が出ました。相場環境が不安定なため、ディフェンシブなパラメータを維持します。');
