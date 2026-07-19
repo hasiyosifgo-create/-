@@ -126,9 +126,12 @@ app.get('/api/status', async (req, res) => {
     assetHistory: bot.assetHistory,
     scanProgress: `${scanIndex} / ${JAPAN_PRIME_SYMBOLS.length}`,
     dbError: bot.dbError,
-    learningReport: bot.learningReport,
-    symbolsMap: JAPAN_PRIME_SYMBOLS_MAP
+    learningReport: bot.learningReport
   });
+});
+
+app.get('/api/symbols', (req, res) => {
+  res.json(JAPAN_PRIME_SYMBOLS_MAP);
 });
 
 app.post('/api/toggle', async (req, res) => {

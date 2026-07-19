@@ -5,6 +5,7 @@ import './index.css';
 
 function App() {
   const [status, setStatus] = useState(null);
+  const [symbolsMap, setSymbolsMap] = useState({});
 
   const fetchStatus = async () => {
     try {
@@ -18,9 +19,22 @@ function App() {
     }
   };
 
+  const fetchSymbols = async () => {
+    try {
+      const res = await fetch('/api/symbols');
+      if (res.ok) {
+        const data = await res.json();
+        setSymbolsMap(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch symbols", err);
+    }
+  };
+
   useEffect(() => {
+    fetchSymbols();
     fetchStatus();
-    const interval = setInterval(fetchStatus, 3000); // 3秒ごとに状況更新
+    const interval = setInterval(fetchStatus, 10000); // 10秒ごとに状況更新（通信量節約）
     return () => clearInterval(interval);
   }, []);
 
@@ -137,7 +151,7 @@ function App() {
               </thead>
               <tbody>
                 {Object.keys(status.portfolio).map(symbol => {
-                  const companyName = status.symbolsMap?.[symbol]?.name || symbol;
+                  const companyName = symbolsMap?.[symbol]?.name || symbol;
                   return (
                     <tr key={symbol}>
                       <td style={{ fontWeight: 600 }}>
@@ -194,7 +208,7 @@ function App() {
               </thead>
               <tbody>
                 {status.history.map((item) => {
-                  const companyName = status.symbolsMap?.[item.symbol]?.name || item.symbol;
+                  const companyName = symbolsMap?.[item.symbol]?.name || item.symbol;
                   return (
                     <tr key={item.id}>
                       <td>{new Date(item.date).toLocaleString()}</td>
