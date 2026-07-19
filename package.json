@@ -11,6 +11,7 @@
     "start": "node server.js"
   },
   "dependencies": {
+    "@google/genai": "^2.11.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
@@ -19,6 +20,7 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "recharts": "^3.8.1",
+    "synaptic": "^1.1.4",
     "yahoo-finance2": "^3.15.4"
   },
   "devDependencies": {
