@@ -1,6 +1,10 @@
 import { fetchStockData, fetchCurrentPrice, fetchNews, calculateVWAP, fetchFundamentals } from './yahoo.js';
 import { JAPAN_PRIME_SYMBOLS_MAP, SECTOR_ETF_MAP } from './symbols.js';
 import { BotState } from './db.js';
+import { Architect, Network } from 'synaptic';
+import { GoogleGenAI } from '@google/genai';
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || 'dummy' });
 
 const POSITIVE_WORDS = ['buy', 'up', 'bull', 'growth', 'profit', 'beats', 'positive', 'surge', 'record', 'gain', 'jump', 'upgrade', 'strong'];
 const NEGATIVE_WORDS = ['sell', 'down', 'bear', 'loss', 'misses', 'negative', 'drop', 'plunge', 'contaminated', 'lawsuit', 'panic', 'downgrade', 'weak', 'crash', 'fall'];
@@ -153,6 +157,17 @@ export class BotEngine {
 
       this.learningReport = state.learningReport || '';
       this.lastReviewDate = state.lastReviewDate || '';
+      
+      // ニューラルネットワーク（AIの脳）の初期化
+      if (state.brainData) {
+        this.network = Network.fromJSON(state.brainData);
+        console.log('Brain loaded from MongoDB');
+      } else {
+        // 入力層(4): RSI, MACD, VWAP乖離率, PER | 隠れ層(8) | 出力層(1): 勝つ確率(0~1)
+        this.network = new Architect.Perceptron(4, 8, 1);
+        console.log('New Brain created');
+      }
+
       this.isReady = true;
       this.dbError = false;
       console.log('Bot data initialized from MongoDB');
@@ -165,21 +180,19 @@ export class BotEngine {
   }
 
   async saveData() {
-    if (!this.dbState) return;
-    this.dbState.balance = this.balance;
-    this.dbState.portfolio = this.portfolio;
-    this.dbState.history = this.history;
-    this.dbState.parameters = this.parameters;
-    this.dbState.logs = this.logs.slice(0, 100);
-    this.dbState.learningReport = this.learningReport;
-    this.dbState.lastReviewDate = this.lastReviewDate;
-    this.dbState.assetHistory = this.assetHistory;
-    this.dbState.markModified('portfolio');
-    this.dbState.markModified('parameters');
-    this.dbState.markModified('history');
-    this.dbState.markModified('logs');
-    this.dbState.markModified('assetHistory');
+    if (this.dbError) return;
     try {
+      this.dbState.balance = this.balance;
+      this.dbState.portfolio = this.portfolio;
+      this.dbState.history = this.history;
+      this.dbState.parameters = this.parameters;
+      this.dbState.logs = this.logs;
+      this.dbState.assetHistory = this.assetHistory;
+      this.dbState.learningReport = this.learningReport;
+      this.dbState.lastReviewDate = this.lastReviewDate;
+      if (this.network) {
+        this.dbState.brainData = this.network.toJSON();
+      }
       await this.dbState.save();
     } catch (err) {
       console.error('Failed to save data to MongoDB', err);
@@ -234,9 +247,9 @@ export class BotEngine {
     }
 
     // 日本の政治・為替などマクロニュース感情を計算
-    const nikkeiNewsScore = await this.analyzeSentiment('^N225');
-    const usdJpyNewsScore = await this.analyzeSentiment('JPY=X');
-    this.macroSentiment = nikkeiNewsScore + usdJpyNewsScore;
+    const nikkeiNews = await fetchNews('^N225');
+    const usdJpyNews = await fetchNews('JPY=X');
+    this.macroSentiment = await this.analyzeSentiment(nikkeiNews) + await this.analyzeSentiment(usdJpyNews);
   }
 
   async recordAssetSnapshot() {
@@ -290,6 +303,8 @@ export class BotEngine {
       const revenue = (shares * price) - tax; // 税引き後の実際の受取金額
       this.balance += revenue;
 
+      const entryTrade = this.portfolio[symbol].buyState;
+
       this.portfolio[symbol].shares -= shares;
 
       // 損切りの場合、自己学習（反省）を実行し連敗カウントを加算
@@ -310,12 +325,28 @@ export class BotEngine {
           await this.addLog(`⛔ 【ブラックリスト登録】${companyName} は3連続で損切りとなったため、相性が極悪と判断し今後の取引を永久凍結します。`);
         }
 
+        // 強化学習：損切り時は罰（0）を与える
+        if (this.network && entryTrade) {
+          try {
+            this.network.activate(entryTrade.brainInputs || [0.5, 0.5, 0.5, 0.5]);
+            this.network.propagate(0.1, [0]); // 0 = 負け
+          } catch(e) {}
+        }
+
         await this.analyzeMistake(symbol, price);
       } 
       // 利確できた場合は連敗カウントをリセット
       else if (reason === 'TAKE_PROFIT') {
         if (!this.parameters[symbol]) this.parameters[symbol] = {};
         this.parameters[symbol].consecutiveLosses = 0;
+        
+        // 強化学習：利確時は報酬（1）を与える
+        if (this.network && entryTrade) {
+          try {
+            this.network.activate(entryTrade.brainInputs || [0.5, 0.5, 0.5, 0.5]);
+            this.network.propagate(0.1, [1]); // 1 = 勝ち
+          } catch(e) {}
+        }
       }
 
       if (this.portfolio[symbol].shares === 0) {
@@ -464,19 +495,33 @@ export class BotEngine {
     return rsi;
   }
 
-  async analyzeSentiment(symbol) {
-    const newsTitles = await fetchNews(symbol);
-    if (newsTitles.length === 0) return 0;
+  async analyzeSentiment(newsList) {
+    if (!newsList || newsList.length === 0) return 0;
+    
+    // Gemini APIキーが設定されていればLLMで高度な感情分析
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const prompt = `以下のニュース見出しを読み、株価への影響を -10 (大暴落の予兆) から +10 (ストップ高の予兆) の整数で評価してください。数字のみを出力してください。\n\nニュース:\n${newsList.join('\n')}`;
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+        });
+        const score = parseInt(response.text.trim(), 10);
+        return isNaN(score) ? 0 : score;
+      } catch (err) {
+        console.error('Gemini API Error:', err.message);
+      }
+    }
 
+    // APIキーがない場合、またはエラー時は従来の簡易キーワード判定（フォールバック）
     let score = 0;
-    for (const title of newsTitles) {
-      const lowerTitle = title.toLowerCase();
-      for (const word of POSITIVE_WORDS) {
-        if (lowerTitle.includes(word)) score += 1;
-      }
-      for (const word of NEGATIVE_WORDS) {
-        if (lowerTitle.includes(word)) score -= 1;
-      }
+    const text = newsList.join(' ').toLowerCase();
+    
+    for (const word of POSITIVE_WORDS) {
+      if (text.includes(word)) score += 1;
+    }
+    for (const word of NEGATIVE_WORDS) {
+      if (text.includes(word)) score -= 1;
     }
     return score;
   }
@@ -531,6 +576,7 @@ export class BotEngine {
     const prevSignal = signalLine[i - 1];
     const currMacd = macdLine[i];
     const currSignal = signalLine[i];
+    const macdHist = currMacd - currSignal;
 
     const currRsi = rsi[i];
 
@@ -544,22 +590,18 @@ export class BotEngine {
 
     // JAPAN_PRIME_SYMBOLS_MAP を利用してセクター（同業界）全体のトレンドを判定
     let sectorTrendScore = 0;
-    // 動的にインポートするか、あるいはグローバルにアクセスする（ここでは簡易的に判定）
     if (typeof process !== 'undefined') {
-      import('./symbols.js').then(module => {
-        const JAPAN_PRIME_SYMBOLS_MAP = module.JAPAN_PRIME_SYMBOLS_MAP;
-        const mySector = JAPAN_PRIME_SYMBOLS_MAP[symbol]?.sector;
-        if (mySector) {
-          for (const sym in this.latestTrends) {
-            if (JAPAN_PRIME_SYMBOLS_MAP[sym]?.sector === mySector) {
-              sectorTrendScore += this.latestTrends[sym];
-            }
+      const mySector = JAPAN_PRIME_SYMBOLS_MAP[symbol]?.sector;
+      if (mySector) {
+        for (const sym in this.latestTrends) {
+          if (JAPAN_PRIME_SYMBOLS_MAP[sym]?.sector === mySector) {
+            sectorTrendScore += this.latestTrends[sym];
           }
         }
-      }).catch(() => {});
+      }
     }
 
-    const sentimentScore = await this.analyzeSentiment(symbol);
+    const sentimentScore = await this.analyzeSentiment(await fetchNews(symbol));
 
     // AI学習に基づく追加の買い制限チェック
     let allowedByLearning = true;
@@ -624,10 +666,27 @@ export class BotEngine {
           }
         }
 
+        // 【5. 強化学習AIによる最終勝率スコア予測】
+        let brainInputs = [
+          currRsi / 100, // 0~1に正規化
+          (macdHist + 100) / 200, // -100~100 を 0~1 に正規化
+          Math.min(Math.max((currentPrice - vwap) / vwap + 0.5, 0), 1), // VWAP乖離率
+          fundamentals ? Math.min(fundamentals.trailingPE / 50, 1) : 0.5 // PER (50倍で1)
+        ];
+        
+        let winProbability = 0;
+        if (this.network) {
+          winProbability = this.network.activate(brainInputs)[0];
+          // AIが予測した勝率が50%未満なら自信がないと判断してスルー
+          if (winProbability < 0.50) {
+            return { symbol, action: 'HOLD', currentPrice };
+          }
+        }
+
         let targetShares = Math.floor((this.balance * 0.2) / currentPrice);
         targetShares = Math.floor(targetShares / 100) * 100;
         if (targetShares === 0) targetShares = 100; 
-
+        
         const affordableShares = Math.floor(this.balance / currentPrice / 100) * 100;
         const sharesToBuy = Math.min(targetShares, affordableShares);
 
@@ -640,7 +699,7 @@ export class BotEngine {
         const volatility = (maxP - minP) / minP;
 
         // 買った瞬間の全情報（セクタートレンド、マクロ感情含む）を保存
-        const currentState = { rsi: currRsi, macd: currMacd, sentimentScore, price: currentPrice, sectorTrend: sectorTrendScore, macroSentiment: this.macroSentiment };
+        const currentState = { rsi: currRsi, macd: currMacd, sentimentScore, price: currentPrice, sectorTrend: sectorTrendScore, macroSentiment: this.macroSentiment, brainInputs };
         
         if (sharesToBuy >= 100) {
           action = 'INTENT_TO_BUY';
@@ -741,7 +800,6 @@ export class BotEngine {
          this.parameters[sym].maxRsi = 75; // RSI許容度を上げる
          this.parameters[sym].minSentiment = -5; // ニュースへの過剰反応を和らげる
          this.parameters[sym].macdStrict = false;
-         this.parameters[sym].isBanned = false; // ブラックリストも強制解除
       }
     } else {
       await this.addLog('⚠️ 過去60日の相場では損失が出ました。相場環境が不安定なため、ディフェンシブなパラメータを維持します。');
