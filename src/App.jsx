@@ -6,6 +6,7 @@ import './index.css';
 function App() {
   const [status, setStatus] = useState(null);
   const [symbolsMap, setSymbolsMap] = useState({});
+  const [isSleeping, setIsSleeping] = useState(false);
 
   const fetchStatus = async () => {
     try {
@@ -13,6 +14,7 @@ function App() {
       if (res.ok) {
         const data = await res.json();
         setStatus(data);
+        setIsSleeping(false);
       }
     } catch (err) {
       console.error("Failed to fetch status", err);
@@ -33,8 +35,28 @@ function App() {
 
   useEffect(() => {
     fetchSymbols();
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 10000); // 10秒ごとに状況更新（通信量節約）
+
+    const checkAndFetch = () => {
+      const now = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
+      const hours = now.getHours();
+      const minutes = now.getMinutes();
+      const day = now.getDay();
+      const timeNum = hours * 100 + minutes;
+
+      // 土日（0=日, 6=土）は終日お休み
+      const isWeekend = (day === 0 || day === 6);
+      
+      // 平日の 8:50 〜 15:30 の間だけ稼働
+      if (!isWeekend && timeNum >= 850 && timeNum <= 1530) {
+        fetchStatus();
+      } else {
+        // それ以外の時間は通信を止めてサーバーを冬眠させる
+        setIsSleeping(true);
+      }
+    };
+
+    checkAndFetch();
+    const interval = setInterval(checkAndFetch, 10000); // 10秒ごとに判定
     return () => clearInterval(interval);
   }, []);
 
@@ -59,6 +81,18 @@ function App() {
       console.error("Failed to start backtest", err);
     }
   };
+
+  if (isSleeping) {
+    return (
+      <div className="app-container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', textAlign: 'center' }}>
+        <h1 style={{ fontSize: '3rem', marginBottom: '1rem' }}>😴 冬眠中</h1>
+        <p style={{ fontSize: '1.2rem', color: '#888' }}>
+          市場時間外（15:30 〜 翌8:50）のため、通信を停止してサーバーを休ませています。<br/>
+          翌営業日の朝に自動的に再開しますので、この画面を開いたままでお待ちください。
+        </p>
+      </div>
+    );
+  }
 
   if (!status) return <div className="app-container"><div className="loader"></div> サーバーに接続中...</div>;
 
