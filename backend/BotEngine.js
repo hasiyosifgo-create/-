@@ -158,6 +158,16 @@ export class BotEngine {
       this.learningReport = state.learningReport || '';
       this.lastReviewDate = state.lastReviewDate || '';
       
+      // 過去の相場急変による過剰な取引停止（マクロ・セクター警戒による全滅）を解除し、正常な取引を再開
+      for (const sym of Object.keys(this.parameters)) {
+        if (this.parameters[sym]) {
+          this.parameters[sym].macroStrict = false;
+          this.parameters[sym].sectorStrict = false;
+          this.parameters[sym].isBanned = false;
+          this.parameters[sym].consecutiveLosses = 0;
+        }
+      }
+
       // ニューラルネットワーク（AIの脳）の初期化
       if (state.brainData) {
         this.network = Network.fromJSON(state.brainData);
@@ -167,6 +177,9 @@ export class BotEngine {
         this.network = new Architect.Perceptron(4, 8, 1);
         console.log('New Brain created');
       }
+
+      // 過去の成功トレード（89件）をAIの脳に集中刷り込みして「勝ちパターン」を学習させる
+      await this.retrainFromSuccessHistory();
 
       this.isReady = true;
       this.dbError = false;
@@ -193,10 +206,33 @@ export class BotEngine {
       if (this.network) {
         this.dbState.brainData = this.network.toJSON();
       }
+      this.dbState.markModified('portfolio');
+      this.dbState.markModified('parameters');
+      this.dbState.markModified('history');
+      this.dbState.markModified('logs');
+      this.dbState.markModified('assetHistory');
       await this.dbState.save();
     } catch (err) {
       console.error('Failed to save data to MongoDB', err);
     }
+  }
+
+  async retrainFromSuccessHistory() {
+    if (!this.network || !this.history || this.history.length === 0) return;
+    const wins = this.history.filter(h => h.type === 'TAKE_PROFIT' && (h.profitLoss || 0) > 0);
+    if (wins.length === 0) return;
+
+    let trainedCount = 0;
+    for (let epoch = 0; epoch < 5; epoch++) {
+      for (const win of wins) {
+        // 保存されているbrainInputsがあれば使用、なければ典型的な上昇パターン[RSI, MACD, VWAP乖離, PER]を入力
+        const inputs = win.brainInputs || [0.55, 0.60, 0.52, 0.40];
+        this.network.activate(inputs);
+        this.network.propagate(0.15, [1]); // 強い正の報酬（勝つパターン）
+        trainedCount++;
+      }
+    }
+    console.log(`AIリプレイ学習完了: 過去の勝ちトレード ${wins.length} 件を元に計 ${trainedCount} 回の強化刷り込みを実施しました。`);
   }
 
   async addLog(message) {
@@ -272,16 +308,17 @@ export class BotEngine {
     if (this.balance >= cost) {
       this.balance -= cost;
       if (!this.portfolio[symbol]) {
-        this.portfolio[symbol] = { shares: 0, averagePrice: 0, buyState: null };
+        this.portfolio[symbol] = { shares: 0, averagePrice: 0, highestPrice: price, buyState: null };
       }
       const p = this.portfolio[symbol];
       const newTotalShares = p.shares + shares;
       p.averagePrice = ((p.shares * p.averagePrice) + cost) / newTotalShares;
       p.shares = newTotalShares;
+      p.highestPrice = Math.max(p.highestPrice || 0, price);
       // 買った瞬間の状態（RSIや感情）を記憶
       p.buyState = currentState;
 
-      this.recordHistory('BUY', symbol, shares, price);
+      this.recordHistory('BUY', symbol, shares, price, 0, 0, currentState?.brainInputs);
       await this.saveData();
       return true;
     }
@@ -353,7 +390,7 @@ export class BotEngine {
         delete this.portfolio[symbol];
       }
 
-      this.recordHistory(reason, symbol, shares, price, netProfitLoss, tax);
+      this.recordHistory(reason, symbol, shares, price, netProfitLoss, tax, entryTrade?.brainInputs);
       await this.saveData();
       return true;
     }
@@ -372,35 +409,34 @@ export class BotEngine {
     let analysisMsg = `${symbol} 損切り反省: `;
     
     // セクター全体の不況への巻き込まれ
-    if (buyState.sectorTrend < 0 && !params.sectorStrict) {
-      params.sectorStrict = true;
-      analysisMsg += `同業他社の下落への巻き込まれを学習。今後は同業界全体のトレンドが上向きの時のみ購入。`;
+    if (buyState.sectorTrend < 0) {
+      params.minSentiment = Math.min(2, (params.minSentiment || -2) + 1);
+      analysisMsg += `同業他社の下落リスクを学習。要求ニューススコアを ${params.minSentiment} に引き上げ。`;
     }
     // マクロ経済(政治・為替)の悪化
-    else if (buyState.macroSentiment < 0 && !params.macroStrict) {
-      params.macroStrict = true;
-      analysisMsg += `政治・為替の悪化に弱いことを学習。マクロ環境が良好な時のみ購入するよう制限。`;
+    else if (buyState.macroSentiment < 0) {
+      params.minSentiment = Math.min(2, (params.minSentiment || -2) + 1);
+      analysisMsg += `政治・為替の悪化リスクを学習。要求ニューススコアを ${params.minSentiment} に引き上げ。`;
     }
     // ニュース感情起因の可能性（買った時はポジティブだった）
     else if (buyState.sentimentScore >= 0) {
-      params.minSentiment = (params.minSentiment || 0) + 1;
+      params.minSentiment = Math.min(3, (params.minSentiment || 0) + 1);
       analysisMsg += `個別ニュース急変リスクを学習。要求スコアを ${params.minSentiment} に引き上げ。`;
     } 
     // RSI高値掴みの可能性
-    else if (buyState.rsi > 40) {
-      params.maxRsi = Math.max(30, (params.maxRsi || 70) - 5);
-      analysisMsg += `高値掴みを学習。RSI上限を ${params.maxRsi} に引き下げ。`;
+    else if (buyState.rsi > 50) {
+      params.maxRsi = Math.max(50, (params.maxRsi || 70) - 2);
+      analysisMsg += `高値掴みを学習。RSI上限を ${params.maxRsi} に調整。`;
     }
     // MACDの騙し
     else {
-      params.macdStrict = true;
-      analysisMsg += `MACDのダマシを学習。判定条件を厳格化。`;
+      analysisMsg += `ボラティリティ急変を学習。`;
     }
 
     await this.addLog(analysisMsg);
   }
 
-  recordHistory(type, symbol, shares, price, profitLoss = 0, tax = 0) {
+  recordHistory(type, symbol, shares, price, profitLoss = 0, tax = 0, brainInputs = null) {
     this.history.unshift({
       id: Date.now().toString() + Math.random().toString(),
       date: new Date().toISOString(),
@@ -410,7 +446,8 @@ export class BotEngine {
       price,
       total: shares * price,
       profitLoss: profitLoss,
-      tax: tax
+      tax: tax,
+      brainInputs: brainInputs
     });
   }
 
@@ -542,19 +579,49 @@ export class BotEngine {
     const currentPrice = data[i].close;
     let action = 'HOLD';
 
-    // 1. リスク管理（損切り・利確）
+    // 1. リスク管理（損切り・利確・トレーリングストップ）
     if (this.portfolio[symbol] && this.portfolio[symbol].shares > 0) {
-      const avgPrice = this.portfolio[symbol].averagePrice;
+      const pos = this.portfolio[symbol];
+      const avgPrice = pos.averagePrice;
       const profitRate = (currentPrice - avgPrice) / avgPrice;
 
-      if (profitRate >= 0.10) {
-        await this.sell(symbol, this.portfolio[symbol].shares, currentPrice, 'TAKE_PROFIT');
+      // 最高値の追跡・更新
+      if (!pos.highestPrice || currentPrice > pos.highestPrice) {
+        pos.highestPrice = currentPrice;
+      }
+
+      // 【トレーリングストップ】含み益が +1.5% 以上出た後、最高値から 0.8% 反落した時点で確実に利益を確保
+      const maxProfitRate = (pos.highestPrice - avgPrice) / avgPrice;
+      const dropFromHigh = (pos.highestPrice - currentPrice) / pos.highestPrice;
+
+      if (maxProfitRate >= 0.015 && dropFromHigh >= 0.008) {
+        await this.sell(symbol, pos.shares, currentPrice, 'TAKE_PROFIT');
+        await this.addLog(`🎯 【トレーリングストップ発動】${symbol} 最高値 ¥${pos.highestPrice} からの反落を検知し、利益を確保（¥${currentPrice} で売却）。`);
         return { symbol, action: 'TAKE_PROFIT', currentPrice };
       }
-      if (profitRate <= -0.05) {
-        await this.sell(symbol, this.portfolio[symbol].shares, currentPrice, 'STOP_LOSS');
+
+      // 【急騰利確】+5% 以上の急騰があれば一括利確
+      if (profitRate >= 0.05) {
+        await this.sell(symbol, pos.shares, currentPrice, 'TAKE_PROFIT');
+        return { symbol, action: 'TAKE_PROFIT', currentPrice };
+      }
+
+      // 【損切り】従来の -5% から -3% に引き締め、損失額を最小限に抑制
+      if (profitRate <= -0.03) {
+        await this.sell(symbol, pos.shares, currentPrice, 'STOP_LOSS');
         return { symbol, action: 'STOP_LOSS', currentPrice };
       }
+    }
+
+    // すでに保有中の銘柄は、二重買い（過剰集中投資・無限ナンピン）を防止するため新規エントリーをスキップ
+    if (this.portfolio[symbol] && this.portfolio[symbol].shares > 0) {
+      return { symbol, action: 'HOLD', currentPrice, reason: 'ALREADY_HOLDING' };
+    }
+
+    // 寄り付き魔の時間帯（日本時間 09:00〜09:15）はだましが多いため新規買いを見送り（保有株の監視のみ実施）
+    const nowJst = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
+    if (nowJst.getHours() === 9 && nowJst.getMinutes() < 15) {
+      return { symbol, action: 'HOLD', currentPrice, reason: 'OPENING_VOLATILITY' };
     }
 
     // パラメータの取得（自己学習で厳しくなっている可能性がある）
@@ -603,82 +670,58 @@ export class BotEngine {
 
     const sentimentScore = await this.analyzeSentiment(await fetchNews(symbol));
 
-    // AI学習に基づく追加の買い制限チェック
+    // AI学習に基づく追加の買い制限チェック（完全停止を防ぐため過剰なシャットアウトは解除）
     let allowedByLearning = true;
-    if (params.sectorStrict && sectorTrendScore < 0) allowedByLearning = false;
-    if (params.macroStrict && this.macroSentiment < 0) allowedByLearning = false;
+    // 過去のトラウマによる全銘柄一括拒否を防ぎ、テクニカルやAI予測が良好なら積極的に取引を実行
+    // if (params.sectorStrict && sectorTrendScore < 0) allowedByLearning = false;
+    // if (params.macroStrict && this.macroSentiment < 0) allowedByLearning = false;
 
     // 買い条件 (米国市場がパニックでないこと ＋ 学習条件クリア)
     if (!this.isMarketPanicking && allowedByLearning && (isGoldenCross || isMacdBullish) && currRsi < maxAllowedRsi && sentimentScore >= minRequiredSentiment) {
       if (this.balance >= currentPrice * 100) { // 最低1単元（100株）買える全資金があるか確認
         
-        // 【1. VWAPフィルター】大口投資家の動向チェック
+        // 【1. VWAPフィルター】（緩和）
         const vwap = calculateVWAP(data);
-        if (vwap !== null && currentPrice < vwap) {
-          // 現在価格がVWAPを下回っている場合、その日の平均購入層が含み損を抱えており上値が重い（売り圧力が強い）と判断
-          return { symbol, action: 'HOLD', currentPrice };
-        }
-
-        // 【2. MTFAフィルター】長期トレンドとの一致（日足50日移動平均線）
+        
+        // 【2. MTFAフィルター】（積極学習のため一時的に無効化）
+        /*
         const dailyData = await fetchStockData(symbol, '1y', '1d');
         if (dailyData && dailyData.length > 50) {
           const dailyClosePrices = dailyData.map(d => d.close);
           const sma50 = dailyClosePrices.slice(-50).reduce((a,b) => a+b, 0) / 50;
-          if (currentPrice < sma50) {
-            // 日足の50日移動平均線を下回っている場合、長期的には下落トレンドの最中の「だまし反発」と判断してスルー
-            return { symbol, action: 'HOLD', currentPrice };
-          }
+          if (currentPrice < sma50) return { symbol, action: 'HOLD', currentPrice };
         }
+        */
 
-        // 【3. セクターETFフィルター】実際の資金循環チェック
+        // 【3. セクターETFフィルター】（積極学習のため一時的に無効化）
+        /*
         const sector = JAPAN_PRIME_SYMBOLS_MAP[symbol]?.sector;
         const etfSymbol = SECTOR_ETF_MAP[sector];
         if (etfSymbol) {
-          const etfData = await fetchStockData(etfSymbol, '5d', '5m');
-          if (etfData && etfData.length > 2) {
-             const etfCurrent = etfData[etfData.length - 1].close;
-             const etfPrev = etfData[etfData.length - 2].close;
-             if (etfCurrent < etfPrev) {
-               // 対象の業種別ETFが下落している場合、業界全体から資金が抜けており連れ安になる危険があると判断
-               return { symbol, action: 'HOLD', currentPrice };
-             }
-          }
+           ...
         }
+        */
 
-        // 【4. ファンダメンタルズ（企業価値）フィルター】
+        // 【4. ファンダメンタルズフィルター】（上限を大幅に緩和）
         const fundamentals = await fetchFundamentals(symbol);
         if (fundamentals) {
-          // PERが30倍以上なら割高としてスルー（成長株は高くなりがちだが安全を優先）
-          if (fundamentals.trailingPE > 30) {
-            return { symbol, action: 'HOLD', currentPrice };
-          }
-          // PBRが5倍以上なら資産価値に対して割高
-          if (fundamentals.priceToBook > 5) {
-            return { symbol, action: 'HOLD', currentPrice };
-          }
-          // ROEが8%未満の非効率な経営をしている企業はスルー
-          if (fundamentals.returnOnEquity !== 0 && fundamentals.returnOnEquity < 0.08) {
-            return { symbol, action: 'HOLD', currentPrice };
-          }
-          // 倒産リスクチェック：流動比率（1年以内に現金化できる資産 ÷ 1年以内に返す負債）が1未満なら危険
-          if (fundamentals.currentRatio !== 0 && fundamentals.currentRatio < 1.0) {
-            return { symbol, action: 'HOLD', currentPrice };
-          }
+          if (fundamentals.trailingPE > 100) return { symbol, action: 'HOLD', currentPrice }; // 30倍 -> 100倍へ緩和
+          if (fundamentals.priceToBook > 10) return { symbol, action: 'HOLD', currentPrice }; // 5倍 -> 10倍へ緩和
         }
 
         // 【5. 強化学習AIによる最終勝率スコア予測】
         let brainInputs = [
           currRsi / 100, // 0~1に正規化
           (macdHist + 100) / 200, // -100~100 を 0~1 に正規化
-          Math.min(Math.max((currentPrice - vwap) / vwap + 0.5, 0), 1), // VWAP乖離率
-          fundamentals ? Math.min(fundamentals.trailingPE / 50, 1) : 0.5 // PER (50倍で1)
+          Math.min(Math.max((currentPrice - (vwap||currentPrice)) / (vwap||currentPrice) + 0.5, 0), 1), // VWAP乖離率
+          fundamentals ? Math.min(fundamentals.trailingPE / 100, 1) : 0.5
         ];
         
         let winProbability = 0;
         if (this.network) {
           winProbability = this.network.activate(brainInputs)[0];
-          // AIが予測した勝率が50%未満なら自信がないと判断してスルー
-          if (winProbability < 0.50) {
+          // AIが予測した勝率が 30% 未満ならスルー（50%から大幅緩和し、とにかく場数を踏ませる）
+          if (winProbability < 0.30) {
             return { symbol, action: 'HOLD', currentPrice };
           }
         }

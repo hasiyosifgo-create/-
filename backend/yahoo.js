@@ -1,5 +1,7 @@
 import fs from 'fs';
-import yahooFinance from 'yahoo-finance2';
+import YahooFinance from 'yahoo-finance2';
+
+const yahooFinance = new YahooFinance();
 
 export const fetchStockData = async (symbol, range = '1y', interval = '1d') => {
   try {
